@@ -2,12 +2,11 @@ name: Daily Morning Briefing
 
 on:
   schedule:
-    # 07:00 UTC = 09:00 AM Rotterdam (CEST) / 02:00 AM Ciudad de México (CDT)
     - cron: '0 7 * * *'
-  workflow_dispatch: # Botón manual para probar cuando quieras
+  workflow_dispatch:
 
 permissions:
-  contents: write   # Vital para poder guardar el historial .json en el repo
+  contents: write
 
 jobs:
   run-briefing:
@@ -17,7 +16,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          # Usamos fetch-depth: 0 para que git tenga todo el historial y pueda hacer el rebase
           fetch-depth: 0
 
       - name: Set up Python
@@ -26,9 +24,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install google-generativeai feedparser beautifulsoup4 requests
+        run: pip install -r requirements.txt
 
       - name: Restore seen-news history
         run: |
@@ -36,7 +32,7 @@ jobs:
             cp morning_briefing_seen.json ~/.morning_briefing_seen.json
             echo "Historial restaurado"
           else
-            echo "Sin historial previo, empezando desde cero"
+            echo "Sin historial previo"
           fi
 
       - name: Run Morning Briefing
@@ -57,11 +53,18 @@ jobs:
         run: |
           git config --global user.name  "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          
-          # EVITA EL ERROR DE REJECTED:
-          # Trae cualquier cambio manual que hayas hecho en la web antes de subir el JSON
-          git pull --rebase origin main
-          
+
           git add morning_briefing_seen.json
-          # Solo hace commit si el archivo cambió realmente
-          git diff --staged --quiet || (git commit -m "chore: update seen news history [skip ci]" && git push origin main)
+
+          if git diff --staged --quiet; then
+            echo "Sin cambios que guardar."
+            exit 0
+          fi
+
+          git commit -m "chore: update seen news history [skip ci]"
+
+          for i in $(seq 1 5); do
+            git pull --rebase origin main && git push origin main && break
+            echo "Intento $i fallido. Reintentando en 5s..."
+            sleep 5
+          done
