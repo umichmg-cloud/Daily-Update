@@ -27,7 +27,6 @@ RECIPIENT  = os.getenv("GMAIL_TO")
 VISTAS_PATH = Path.home() / ".morning_briefing_seen.json"
 
 # ─── FUENTES RSS ──────────────────────────────────────────────────────────────
-
 RSS_FEEDS = {
     # ── México ────────────────────────────────────────────────────────────────
     "Expansión":           "https://expansion.mx/rss",
@@ -47,7 +46,7 @@ RSS_FEEDS = {
     "Econbrowser":         "https://econbrowser.com/feed",
 
     # ── Opinión: México ───────────────────────────────────────────────────────
-    # Macario Schettino — El Financiero + análisis político-económico MX
+    # Macario Schettino — análisis político-económico MX + geopolítica
     # Activo: publica varias veces por semana, última entrada Mayo 4, 2026
     "Macario Schettino":   "https://macario.substack.com/feed",
 
@@ -58,11 +57,11 @@ RSS_FEEDS = {
     # ── Opinión: Global ───────────────────────────────────────────────────────
     # Michael Burry (Cassandra Unchained) — burbujas, mercados, historia
     # Activo: 270K+ suscriptores, #1 Rising Finance en Substack
-    # ⚠️  Contenido mayormente de pago ($39/mes) — RSS solo da título + intro
+    # ⚠️  Contenido mayormente de pago — RSS da título + intro solamente
     "Michael Burry":       "https://michaeljburry.substack.com/feed",
 
     # Adam Tooze (Chartbook) — economía global, geopolítica, historia económica
-    # Activo: Chartbook #442 publicado hace 2 semanas, ~100 posts/año
+    # Activo: ~100 posts/año, última entrada hace 2 semanas
     "Adam Tooze":          "https://adamtooze.substack.com/feed",
 
     # Noah Smith (Noahpinion) — macro, política industrial, economía laboral
@@ -74,8 +73,8 @@ RSS_FEEDS = {
     "Paul Krugman":        "https://paulkrugman.substack.com/feed",
 }
 
-# Fuentes cuyo contenido se clasifica como 'opinion' directamente
-# (no dependen de keywords, pasan si no están en blacklist)
+# Fuentes de opinión: pasan el filtro automáticamente si no están en blacklist.
+# No dependen de keywords — cualquier artículo reciente de estas fuentes entra.
 OPINION_SOURCES = {
     "Macario Schettino",
     "ECONOMEX",
@@ -90,7 +89,7 @@ KEYWORDS_MEXICO = [
     "mexico", "méxico", "banxico", "mxn", "peso mexicano", "pemex",
     "sheinbaum", "usmca", "t-mec", "nearshoring", "citibanamex",
     "bbva mexico", "inegi", "coneval", "fibra", "bmv", "cetes",
-    "udibonos", "secretaría de hacienda", "reforma fiscal",
+    "udibonos", "secretaría de hacienda", "reforma fiscal", "aifa",
 ]
 KEYWORDS_MACRO = [
     "fed", "federal reserve", "inflation", "cpi", "pce", "gdp",
@@ -102,18 +101,33 @@ KEYWORDS_MACRO = [
     "central bank", "monetary policy",
 ]
 BLACKLIST = [
+    # Temas irrelevantes
     "crypto", "bitcoin", "nft", "soccer", "celebrity",
     "lifestyle", "fashion", "kardashian", "horoscope",
-    "mortgage rate today", "best cd rate", "savings rate today",
-    "heloc", "analyst report:", "stock forecast",
-    "rose farts",  # Marginal Revolution a veces publica cosas muy off-topic
+    # Yahoo Finance: variantes de artículos de tasas genéricas
+    "mortgage and refinance",
+    "best high-yield savings",
+    "best cd rate",
+    "heloc and home equity",
+    "best money market",
+    "mortgage rate sale",
+    "when will mortgage",
+    "historical mortgage",
+    "savings rate today",
+    # Otros
+    "analyst report:",
+    "stock forecast",
+    "earnings call highlights",
+    "world cup",
+    "masterchef",
+    "rose farts",
 ]
 
-MAX_ARTICLES_PER_FEED = 3   # Reducido para evitar timeout en Gemini
-MAX_TOTAL_ARTICLES    = 20  # Tope global de artículos enviados a Gemini
-SCRAPE_TIMEOUT        = 8
-HORAS_MAX_ARTICULO    = 72
-CUERPO_CHARS          = 450  # Balance entre contexto real y no saturar el prompt
+MAX_ARTICLES_PER_FEED  = 3    # Tope por fuente para evitar dominancia de una sola
+MAX_TOTAL_ARTICLES     = 25   # Tope global — opinión necesita algo más de espacio
+SCRAPE_TIMEOUT         = 8
+HORAS_MAX_ARTICULO     = 72
+CUERPO_CHARS           = 450  # Balance entre contexto real y no saturar el prompt
 
 
 # ─── MEMORIA ANTI-REPETICIÓN ──────────────────────────────────────────────────
@@ -142,16 +156,31 @@ def guardar_vistos(urls_nuevas: set, urls_previas: set):
 
 # ─── FILTRADO ─────────────────────────────────────────────────────────────────
 
-def es_relevante(texto: str) -> tuple:
-    """Retorna (es_relevante: bool, categoria: str)."""
+def es_relevante(texto: str, fuente: str = "") -> tuple:
+    """
+    Retorna (es_relevante: bool, categoria: str).
+    Categorías posibles: 'mexico', 'macro', 'opinion'.
+
+    El blacklist se evalúa SIEMPRE primero, sin excepción.
+    Las fuentes de opinión pasan automáticamente si no están en blacklist.
+    """
     t = texto.lower()
     t = t.replace("new mexico", "new_mexico")
+
+    # ── 1. Blacklist: prioridad absoluta sobre todo lo demás ──────────────────
     if any(bl in t for bl in BLACKLIST):
         return False, ""
+
+    # ── 2. Fuentes de opinión: pasan sin necesidad de keywords ───────────────
+    if fuente in OPINION_SOURCES:
+        return True, "opinion"
+
+    # ── 3. Keywords temáticas para el resto de fuentes ───────────────────────
     if any(kw in t for kw in KEYWORDS_MEXICO):
         return True, "mexico"
     if any(kw in t for kw in KEYWORDS_MACRO):
         return True, "macro"
+
     return False, ""
 
 
@@ -173,6 +202,7 @@ def scrape_articulo(url: str) -> str:
     """
     Intenta leer el cuerpo completo del artículo.
     Retorna texto limpio o string vacío si falla/paywall.
+    Los Substacks de pago solo expondrán el intro — es suficiente para el briefing.
     """
     try:
         headers = {
@@ -224,11 +254,10 @@ def fetch_noticias(urls_vistas: set) -> tuple:
     Retorna (noticias: dict, urls_nuevas: set).
     Aplica tope global MAX_TOTAL_ARTICLES para no saturar Gemini.
     """
-    noticias    = {"mexico": [], "macro": []}
+    noticias    = {"mexico": [], "macro": [], "opinion": []}
     urls_nuevas = set()
 
     for fuente, feed_url in RSS_FEEDS.items():
-        # Respetar tope global
         total_actual = sum(len(v) for v in noticias.values())
         if total_actual >= MAX_TOTAL_ARTICLES:
             print(f"\n   ⛔ Tope de {MAX_TOTAL_ARTICLES} artículos alcanzado, deteniendo fetch.")
@@ -267,12 +296,14 @@ def fetch_noticias(urls_vistas: set) -> tuple:
                 print(f"      🕰️  Muy viejo:     {titulo[:45]} [{pub[:16]}]")
                 continue
 
-            relevante, categoria = es_relevante(titulo + " " + resumen)
+            # Pasamos fuente explícitamente para el manejo de opinión
+            relevante, categoria = es_relevante(titulo + " " + resumen, fuente)
             if not relevante:
                 print(f"      🚫 No relevante:  {titulo[:55]}")
                 continue
 
-            print(f"      ✅ [{categoria.upper():6}]    {titulo[:55]}")
+            emoji = {"mexico": "🇲🇽", "macro": "🌎", "opinion": "💬"}.get(categoria, "✅")
+            print(f"      {emoji} [{categoria.upper():7}]  {titulo[:55]}")
 
             cuerpo = ""
             if link:
@@ -301,9 +332,16 @@ def formatear_para_prompt(noticias: dict) -> str:
     Formatea los artículos para el prompt de Gemini.
     Incluye el URL para que Gemini pueda generar hipervínculos.
     """
+    labels = {
+        "mexico":  "NOTICIAS MÉXICO",
+        "macro":   "MACRO / EE.UU.",
+        "opinion": "OPINIÓN Y ANÁLISIS",
+    }
     bloques = []
     for categoria, articulos in noticias.items():
-        label = "NOTICIAS MÉXICO" if categoria == "mexico" else "MACRO / EE.UU."
+        if not articulos:
+            continue
+        label = labels.get(categoria, categoria.upper())
         bloques.append(f"\n{'='*60}\n{label}\n{'='*60}")
         for a in articulos:
             bloques.append(
@@ -326,6 +364,22 @@ def generar_analisis(noticias: dict) -> str:
 
     noticias_texto = formatear_para_prompt(noticias)
     fecha = datetime.date.today().strftime("%A, %d de %B de %Y")
+
+    hay_opinion = bool(noticias.get("opinion"))
+
+    seccion_opinion = """
+4. OPINIÓN Y ANÁLISIS
+   <div class="sec">
+     <div class="sec-label">Opinión y análisis</div>
+     2-3 piezas de los líderes de opinión del día usando estructura art con tag-op.
+     No resumir: interpretar. ¿Qué argumento hace el autor? ¿Con qué evidencia?
+     ¿Por qué importa su punto de vista hoy, en este contexto?
+     Cada pieza con su <a class="read-more">.
+   </div>
+""" if hay_opinion else ""
+
+    numeracion_tp   = "5" if hay_opinion else "4"
+    numeracion_sig  = "6" if hay_opinion else "5"
 
     prompt = f"""
 Eres el editor en jefe de un periódico financiero de élite, como el FT o Reforma Financiero.
@@ -350,7 +404,7 @@ INSTRUCCIONES DE FORMATO:
 
 ESTRUCTURA DE CADA ARTÍCULO/TEMA:
 <div class="art">
-  <span class="tag tag-mx">MÉXICO</span>
+  <span class="tag tag-mx">MÉXICO</span>   <!-- tag-mx / tag-us / tag-op según corresponda -->
   <span class="art-title">Título del tema</span>
   <p class="art-body">2-3 oraciones de análisis real, no solo resumen. Explica la causa,
   el impacto y por qué le importa al lector.</p>
@@ -364,14 +418,15 @@ IMPORTANTE sobre los hipervínculos:
 - NUNCA inventes URLs. Usa EXACTAMENTE el URL que viene en los datos.
 
 ESTRUCTURA DEL BRIEFING:
+
 PASO 0 — SELECCIÓN EDITORIAL (no aparece en el output):
-Antes de escribir el briefing, analiza todos los artículos recibidos y selecciona
-los 10-12 más relevantes según estos criterios:
+Antes de escribir, analiza todos los artículos y selecciona los 10-12 más relevantes según:
   - Impacto macroeconómico real y medible
   - Novedad genuina (no seguimiento de algo ya cubierto)
   - Relevancia directa para México o mercados globales
   - Potencial de conversación o análisis, no solo reporte de precio
-Ignora el resto. No menciones este proceso en el output final.
+Ignora el resto. No menciones este proceso en el output.
+
 1. PORTADA
    <div class="sec">
      <div class="sec-label">Portada</div>
@@ -382,7 +437,7 @@ Ignora el resto. No menciones este proceso en el output final.
 2. MÉXICO HOY
    <div class="sec">
      <div class="sec-label">México hoy</div>
-     3-4 temas usando la estructura de art de arriba.
+     3-4 temas usando la estructura art. Usa tag-mx.
      Incluye: peso/tipo de cambio, Banxico, política económica, nearshoring, lo que haya.
    </div>
 
@@ -390,10 +445,12 @@ Ignora el resto. No menciones este proceso en el output final.
    <div class="sec">
      <div class="sec-label">El mundo</div>
      3-4 temas macro: Fed, economía americana, commodities, geopolítica económica.
-     Cada uno con su <a class="read-more">.
+     Usa tag-us. Cada uno con su <a class="read-more">.
    </div>
 
-4. DE QUÉ HABLAR HOY
+{seccion_opinion}
+
+{numeracion_tp}. DE QUÉ HABLAR HOY
    <div class="sec">
      <div class="sec-label">De qué hablar hoy</div>
      3 talking points usando esta estructura:
@@ -405,7 +462,7 @@ Ignora el resto. No menciones este proceso en el output final.
      </div>
    </div>
 
-5. PARA SEGUIR ESTA SEMANA
+{numeracion_sig}. PARA SEGUIR ESTA SEMANA
    <div class="sec">
      <div class="sec-label">Para seguir esta semana</div>
      2-3 temas de fondo en formato art con su read-more.
@@ -415,13 +472,12 @@ NOTICIAS DEL DÍA (con URLs para los hipervínculos):
 {noticias_texto}
 """
 
-    # Reintentar hasta 3 veces si hay timeout
     for intento in range(3):
         try:
             print(f"   Intento {intento + 1}/3...")
             response = model.generate_content(
                 prompt,
-                request_options={"timeout": 180}  # 3 minutos máximo
+                request_options={"timeout": 180}
             )
             return response.text
         except google.api_core.exceptions.DeadlineExceeded:
@@ -597,7 +653,8 @@ def enviar_email(contenido_html: str):
     <div class="footer">
       <p>
         GENERADO AUTOMÁTICAMENTE · SOLO USO PERSONAL<br>
-        Fuentes: FT · CNBC · Yahoo Finance · Expansión · El Financiero · Reforma · Forbes MX<br>
+        Fuentes: FT · Reuters · CNBC · Econbrowser · Expansión · El Financiero · Reforma<br>
+        Opinión: Burry · Tooze · Krugman · Noah Smith · Schettino · ECONOMEX<br>
         Análisis: Google Gemini 2.5 Flash
       </p>
     </div>
@@ -627,9 +684,10 @@ def main():
     print("📡 Descargando y filtrando noticias...")
     noticias, urls_nuevas = fetch_noticias(urls_vistas)
 
-    total_mx    = len(noticias["mexico"])
-    total_macro = len(noticias["macro"])
-    total       = total_mx + total_macro
+    total_mx      = len(noticias["mexico"])
+    total_macro   = len(noticias["macro"])
+    total_opinion = len(noticias["opinion"])
+    total         = total_mx + total_macro + total_opinion
 
     print(f"\n{'─'*50}")
     if total == 0:
@@ -637,7 +695,7 @@ def main():
         print("   Revisa los 🕰️  y 🚫 arriba para entender por qué.")
         return
 
-    print(f"✅ {total} artículos nuevos: {total_mx} de México / {total_macro} macro\n")
+    print(f"✅ {total} artículos: {total_mx} MX · {total_macro} macro · {total_opinion} opinión\n")
 
     print("🤖 Generando análisis con Gemini 2.5 Flash...")
     analisis = generar_analisis(noticias)
