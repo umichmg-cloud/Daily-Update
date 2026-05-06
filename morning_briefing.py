@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 import requests
+import google.api_core.exceptions
 from bs4 import BeautifulSoup
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -26,27 +27,22 @@ RECIPIENT  = os.getenv("GMAIL_TO")
 VISTAS_PATH = Path.home() / ".morning_briefing_seen.json"
 
 # ─── FUENTES RSS ──────────────────────────────────────────────────────────────
-# Todas verificadas y activas (Mayo 2026)
 RSS_FEEDS = {
     # ── México ────────────────────────────────────────────────────────────────
-    "Expansión":          "https://expansion.mx/rss",
-    "El Financiero Eco":  "https://www.elfinanciero.com.mx/arc/outboundfeeds/rss/?outputType=xml&hierarchy=economia",
-    "El Financiero Mdo":  "https://www.elfinanciero.com.mx/arc/outboundfeeds/rss/?outputType=xml&hierarchy=mercados",
-    "El Economista":      "https://www.eleconomista.com.mx/rss/mercados", # Sustituto de Milenio
-    "Forbes México":      "https://www.forbes.com.mx/category/negocios/feed/",
-    "Reforma Negocios":   "https://www.reforma.com/rss/negocios.xml",
+    "Expansión":           "https://expansion.mx/rss",
+    "El Financiero Eco":   "https://www.elfinanciero.com.mx/arc/outboundfeeds/rss/?outputType=xml&hierarchy=economia",
+    "El Financiero Mdo":   "https://www.elfinanciero.com.mx/arc/outboundfeeds/rss/?outputType=xml&hierarchy=mercados",
+    "Forbes México":       "https://www.forbes.com.mx/category/negocios/feed/",
+    "Reforma Negocios":    "https://www.reforma.com/rss/negocios.xml",
 
     # ── EE.UU. / Global ───────────────────────────────────────────────────────
-    "WSJ Markets":        "https://feeds.a.dj.com/rss/RSSMarketsMain.xml", # Sustituto de Reuters
-    "FT Markets":         "https://www.ft.com/markets?format=rss",
-    "CNBC Economy":       "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664", # URL nativa de CNBC
-    "Yahoo Finance":      "https://finance.yahoo.com/news/rssindex",
-    "Investing Macro":    "https://mx.investing.com/rss/news_285", # Excelente para datos duros macroeconómicos
+    "FT Markets":          "https://www.ft.com/markets?format=rss",
+    "CNBC Finance":        "https://www.cnbc.com/id/10000664/device/rss/rss.html",
+    "Yahoo Finance":       "https://finance.yahoo.com/news/rssindex",
 
     # ── Opinión / Análisis ────────────────────────────────────────────────────
-    "Econbrowser":        "https://econbrowser.com/feed",
-    "Calculated Risk":    "https://www.calculatedriskblog.com/feeds/posts/default",
-    "Marginal Revolution":"https://marginalrevolution.com/feed", # URL corregida (Feedburner ya no sirve)
+    "Econbrowser":         "https://econbrowser.com/feed",
+    "Marginal Revolution": "https://marginalrevolution.com/feed",
 }
 
 # ─── FILTROS ──────────────────────────────────────────────────────────────────
@@ -54,7 +50,7 @@ KEYWORDS_MEXICO = [
     "mexico", "méxico", "banxico", "mxn", "peso mexicano", "pemex",
     "sheinbaum", "usmca", "t-mec", "nearshoring", "citibanamex",
     "bbva mexico", "inegi", "coneval", "fibra", "bmv", "cetes",
-    "udibonos", "hacienda mexico", "secretaría de hacienda",
+    "udibonos", "secretaría de hacienda", "reforma fiscal",
 ]
 KEYWORDS_MACRO = [
     "fed", "federal reserve", "inflation", "cpi", "pce", "gdp",
@@ -68,18 +64,22 @@ KEYWORDS_MACRO = [
 BLACKLIST = [
     "crypto", "bitcoin", "nft", "soccer", "celebrity",
     "lifestyle", "fashion", "kardashian", "horoscope",
-    "mortgage rate today", "cd rate", "savings rate today",
+    "mortgage rate today", "best cd rate", "savings rate today",
     "heloc", "analyst report:", "stock forecast",
+    "rose farts",  # Marginal Revolution a veces publica cosas muy off-topic
 ]
 
-MAX_ARTICLES_PER_FEED = 5
+MAX_ARTICLES_PER_FEED = 3   # Reducido para evitar timeout en Gemini
+MAX_TOTAL_ARTICLES    = 20  # Tope global de artículos enviados a Gemini
 SCRAPE_TIMEOUT        = 8
-HORAS_MAX_ARTICULO    = 72  # ampliado a 72h para no perder noticias del fin de semana
+HORAS_MAX_ARTICULO    = 72
+CUERPO_CHARS          = 450  # Balance entre contexto real y no saturar el prompt
 
 
 # ─── MEMORIA ANTI-REPETICIÓN ──────────────────────────────────────────────────
 
 def cargar_vistos() -> set:
+    """Carga URLs ya procesadas, descartando las de más de 7 días."""
     try:
         data = json.loads(VISTAS_PATH.read_text())
         hace_7_dias = (datetime.date.today() - datetime.timedelta(days=7)).isoformat()
@@ -89,6 +89,7 @@ def cargar_vistos() -> set:
 
 
 def guardar_vistos(urls_nuevas: set, urls_previas: set):
+    """Persiste todas las URLs vistas con la fecha de hoy."""
     hoy = datetime.date.today().isoformat()
     try:
         data = json.loads(VISTAS_PATH.read_text())
@@ -102,9 +103,9 @@ def guardar_vistos(urls_nuevas: set, urls_previas: set):
 # ─── FILTRADO ─────────────────────────────────────────────────────────────────
 
 def es_relevante(texto: str) -> tuple:
+    """Retorna (es_relevante: bool, categoria: str)."""
     t = texto.lower()
-    t = t.replace("new mexico", "new_mexico")  # evitar falsos positivos
-    # Blacklist por frase exacta
+    t = t.replace("new mexico", "new_mexico")
     if any(bl in t for bl in BLACKLIST):
         return False, ""
     if any(kw in t for kw in KEYWORDS_MEXICO):
@@ -115,9 +116,10 @@ def es_relevante(texto: str) -> tuple:
 
 
 def es_reciente(entry) -> bool:
+    """True si el artículo fue publicado en las últimas HORAS_MAX_ARTICULO horas."""
     publicado = entry.get("published_parsed")
     if not publicado:
-        return True  # sin fecha → no descartar
+        return True
     pub_dt = datetime.datetime(*publicado[:6])
     antiguedad = (
         datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) - pub_dt
@@ -128,6 +130,10 @@ def es_reciente(entry) -> bool:
 # ─── SCRAPING DEL ARTÍCULO COMPLETO ──────────────────────────────────────────
 
 def scrape_articulo(url: str) -> str:
+    """
+    Intenta leer el cuerpo completo del artículo.
+    Retorna texto limpio o string vacío si falla/paywall.
+    """
     try:
         headers = {
             "User-Agent": (
@@ -165,7 +171,7 @@ def scrape_articulo(url: str) -> str:
             content = soup.get_text(separator=" ", strip=True)
 
         words = content.split()
-        return " ".join(words[:800])
+        return " ".join(words[:600])
 
     except Exception:
         return ""
@@ -174,10 +180,20 @@ def scrape_articulo(url: str) -> str:
 # ─── FETCH DE NOTICIAS ────────────────────────────────────────────────────────
 
 def fetch_noticias(urls_vistas: set) -> tuple:
+    """
+    Retorna (noticias: dict, urls_nuevas: set).
+    Aplica tope global MAX_TOTAL_ARTICLES para no saturar Gemini.
+    """
     noticias    = {"mexico": [], "macro": []}
     urls_nuevas = set()
 
     for fuente, feed_url in RSS_FEEDS.items():
+        # Respetar tope global
+        total_actual = sum(len(v) for v in noticias.values())
+        if total_actual >= MAX_TOTAL_ARTICLES:
+            print(f"\n   ⛔ Tope de {MAX_TOTAL_ARTICLES} artículos alcanzado, deteniendo fetch.")
+            break
+
         print(f"\n   📡 {fuente}")
         try:
             feed = feedparser.parse(feed_url)
@@ -194,6 +210,8 @@ def fetch_noticias(urls_vistas: set) -> tuple:
         count = 0
         for entry in feed.entries:
             if count >= MAX_ARTICLES_PER_FEED:
+                break
+            if sum(len(v) for v in noticias.values()) >= MAX_TOTAL_ARTICLES:
                 break
 
             titulo  = entry.get("title", "").strip()
@@ -239,6 +257,10 @@ def fetch_noticias(urls_vistas: set) -> tuple:
 # ─── FORMATEAR PARA GEMINI ────────────────────────────────────────────────────
 
 def formatear_para_prompt(noticias: dict) -> str:
+    """
+    Formatea los artículos para el prompt de Gemini.
+    Incluye el URL para que Gemini pueda generar hipervínculos.
+    """
     bloques = []
     for categoria, articulos in noticias.items():
         label = "NOTICIAS MÉXICO" if categoria == "mexico" else "MACRO / EE.UU."
@@ -247,63 +269,127 @@ def formatear_para_prompt(noticias: dict) -> str:
             bloques.append(
                 f"\nFUENTE: {a['fuente']}\n"
                 f"TÍTULO: {a['titulo']}\n"
-                f"CONTENIDO: {a['cuerpo'][:600]}..."
+                f"URL: {a['url']}\n"
+                f"CONTENIDO: {a['cuerpo'][:CUERPO_CHARS]}..."
             )
     return "\n".join(bloques)
 
 
 # ─── ANÁLISIS CON GEMINI ──────────────────────────────────────────────────────
+
 def generar_analisis(noticias: dict) -> str:
+    """
+    Llama a Gemini con retry automático en caso de timeout.
+    """
     genai.configure(api_key=GEMINI_KEY)
     model = genai.GenerativeModel('gemini-2.5-flash')
- 
+
     noticias_texto = formatear_para_prompt(noticias)
     fecha = datetime.date.today().strftime("%A, %d de %B de %Y")
- 
+
     prompt = f"""
 Eres el editor en jefe de un periódico financiero de élite, como el FT o Reforma Financiero.
 Hoy es {fecha}.
- 
-Tu tarea: escribir el briefing matutino en HTML para un lector que es un profesional de finanzas o economía en formación.
-El tono es el de un buen periódico: claro, directo, inteligente — no jerga de trading, no buzzwords corporativos.
- 
+
+Tu tarea: escribir el briefing matutino en HTML para un lector que es un profesional de finanzas
+o economía en formación. El tono es el de un buen periódico: claro, directo, inteligente —
+sin jerga de trading ni buzzwords corporativos.
+
 El lector usa este briefing para:
   1. Mantenerse al día con lo que importa
   2. Tener IDEAS sobre qué hablar en entrevistas o conversaciones de negocios
   3. Entender el contexto detrás de los números
- 
+  4. Profundizar en los temas que le interesen (por eso cada artículo debe tener su hiperlink)
+
 INSTRUCCIONES DE FORMATO:
 - Escribe SOLO HTML interno (sin <html>, <head> ni <body>)
-- Usa estas clases CSS que ya existen: section-title, lead, article-item, talking-point, tag-mx, tag-us, tag-opinion
-- NO uses Markdown. NO uses asteriscos. NO uses guiones para listas.
-- Separa secciones con <div class="section">
-- Cada artículo/tema: <div class="article-item">
-- Títulos de sección: <h2 class="section-title">
-- Etiquetas: <span class="tag-mx">MÉXICO</span> o <span class="tag-us">EE.UU.</span>
- 
+- USA estas clases CSS que ya existen en la plantilla:
+    sec, sec-label, lead-text, art, art-title, art-body, tag tag-mx, tag tag-us, tag tag-op,
+    tp, tp-num, tp-title, tp-body, tp-q, read-more
+- NO uses Markdown, asteriscos ni guiones como listas.
+
+ESTRUCTURA DE CADA ARTÍCULO/TEMA:
+<div class="art">
+  <span class="tag tag-mx">MÉXICO</span>
+  <span class="art-title">Título del tema</span>
+  <p class="art-body">2-3 oraciones de análisis real, no solo resumen. Explica la causa,
+  el impacto y por qué le importa al lector.</p>
+  <a href="URL_DEL_ARTÍCULO_FUENTE" class="read-more" target="_blank">Leer artículo completo →</a>
+</div>
+
+IMPORTANTE sobre los hipervínculos:
+- Cada artículo/tema DEBE terminar con el tag <a class="read-more"> apuntando al URL real
+  que viene en el campo URL de cada noticia.
+- Si un tema sintetiza varias noticias, pon el link de la más relevante.
+- NUNCA inventes URLs. Usa EXACTAMENTE el URL que viene en los datos.
+
 ESTRUCTURA DEL BRIEFING:
- 
-1. PORTADA (1 párrafo editorial, la historia más importante del día y por qué importa)
- 
-2. MÉXICO HOY (3-4 temas clave de México con 2-3 oraciones cada uno.
-   Incluye: tipo de cambio si hay movimiento, tasa Banxico, cualquier noticia política-económica)
- 
-3. EL MUNDO (3-4 temas macro: Fed, economía americana, commodities, lo que mueve mercados)
- 
+
+1. PORTADA
+   <div class="sec">
+     <div class="sec-label">Portada</div>
+     <p class="lead-text">Un párrafo editorial con la historia más importante del día
+     y por qué importa. Sin hiperlink aquí.</p>
+   </div>
+
+2. MÉXICO HOY
+   <div class="sec">
+     <div class="sec-label">México hoy</div>
+     3-4 temas usando la estructura de art de arriba.
+     Incluye: peso/tipo de cambio, Banxico, política económica, nearshoring, lo que haya.
+   </div>
+
+3. EL MUNDO
+   <div class="sec">
+     <div class="sec-label">El mundo</div>
+     3-4 temas macro: Fed, economía americana, commodities, geopolítica económica.
+     Cada uno con su <a class="read-more">.
+   </div>
+
 4. DE QUÉ HABLAR HOY
-   3 talking points concretos para una entrevista o conversación:
-   - Qué pasó
-   - Por qué importa
-   - Una pregunta inteligente que puedes hacer
- 
-5. PARA LEER MÁS (2-3 temas de fondo que vale la pena seguir esta semana)
- 
-NOTICIAS DEL DÍA:
+   <div class="sec">
+     <div class="sec-label">De qué hablar hoy</div>
+     3 talking points usando esta estructura:
+     <div class="tp">
+       <div class="tp-num">01 / TALKING POINT</div>
+       <div class="tp-title">Título del tema</div>
+       <p class="tp-body">Qué pasó y por qué importa.</p>
+       <p class="tp-q">Una pregunta inteligente que puedes hacer o que te pueden hacer.</p>
+     </div>
+   </div>
+
+5. PARA SEGUIR ESTA SEMANA
+   <div class="sec">
+     <div class="sec-label">Para seguir esta semana</div>
+     2-3 temas de fondo en formato art con su read-more.
+   </div>
+
+NOTICIAS DEL DÍA (con URLs para los hipervínculos):
 {noticias_texto}
 """
- 
-    response = model.generate_content(prompt)
-    return response.text
+
+    # Reintentar hasta 3 veces si hay timeout
+    for intento in range(3):
+        try:
+            print(f"   Intento {intento + 1}/3...")
+            response = model.generate_content(
+                prompt,
+                request_options={"timeout": 180}  # 3 minutos máximo
+            )
+            return response.text
+        except google.api_core.exceptions.DeadlineExceeded:
+            print(f"   ⚠️  Timeout en Gemini (intento {intento + 1}/3)")
+            if intento < 2:
+                print("   Esperando 15s antes de reintentar...")
+                time.sleep(15)
+        except Exception as e:
+            print(f"   ⚠️  Error inesperado: {e}")
+            if intento < 2:
+                time.sleep(15)
+
+    raise Exception("❌ Gemini no respondió después de 3 intentos. Revisa tu API key y cuota.")
+
+
 # ─── EMAIL HTML ───────────────────────────────────────────────────────────────
 
 def enviar_email(contenido_html: str):
@@ -323,6 +409,7 @@ def enviar_email(contenido_html: str):
     @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Source+Serif+4:ital,opsz,wght@0,8..60,300;0,8..60,400;1,8..60,300&family=IBM+Plex+Mono:wght@400&display=swap');
 
     * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+
     body {{
       background: #f0ebe0;
       font-family: 'Source Serif 4', Georgia, serif;
@@ -330,8 +417,14 @@ def enviar_email(contenido_html: str):
       font-size: 15px;
       line-height: 1.65;
     }}
-    .wrapper {{ max-width: 640px; margin: 0 auto; background: #faf7f2; }}
 
+    .wrapper {{
+      max-width: 640px;
+      margin: 0 auto;
+      background: #faf7f2;
+    }}
+
+    /* ── MASTHEAD ─────────────────────────────────── */
     .masthead {{
       background: #111;
       padding: 28px 32px 20px;
@@ -352,10 +445,12 @@ def enviar_email(contenido_html: str):
       font-size: 9px; color: #666; margin-top: 4px; letter-spacing: 1px;
     }}
 
+    /* ── CONTENIDO ────────────────────────────────── */
     .body-content {{ padding: 28px 32px; }}
 
     .sec {{
-      margin-bottom: 28px; padding-bottom: 24px;
+      margin-bottom: 28px;
+      padding-bottom: 24px;
       border-bottom: 1px solid #ddd8cc;
     }}
     .sec:last-child {{ border-bottom: none; margin-bottom: 0; }}
@@ -372,8 +467,10 @@ def enviar_email(contenido_html: str):
       color: #222; line-height: 1.75;
     }}
 
+    /* ── ARTÍCULOS ────────────────────────────────── */
     .art {{
-      margin-bottom: 18px; padding-left: 12px;
+      margin-bottom: 20px;
+      padding-left: 12px;
       border-left: 2px solid #ddd8cc;
     }}
     .art-title {{
@@ -381,8 +478,23 @@ def enviar_email(contenido_html: str):
       font-size: 14px; font-weight: 700;
       display: block; margin-bottom: 5px; color: #1a1a1a;
     }}
-    .art-body {{ font-size: 13px; line-height: 1.65; color: #444; }}
+    .art-body {{
+      font-size: 13px; line-height: 1.65; color: #444;
+      margin-bottom: 6px;
+    }}
 
+    /* ── HIPERVÍNCULO "LEER MÁS" ──────────────────── */
+    .read-more {{
+      display: inline-block;
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 10px; letter-spacing: 1px;
+      color: #c8a84b;
+      text-decoration: none;
+      border-bottom: 1px solid #c8a84b;
+      padding-bottom: 1px;
+    }}
+
+    /* ── TAGS ─────────────────────────────────────── */
     .tag {{
       display: inline-block;
       font-family: 'IBM Plex Mono', monospace;
@@ -393,6 +505,7 @@ def enviar_email(contenido_html: str):
     .tag-us  {{ background: #1a3a6b; color: #ccdcf0; }}
     .tag-op  {{ background: #5a3010; color: #f0dcc8; }}
 
+    /* ── TALKING POINTS ───────────────────────────── */
     .tp {{
       background: #111; border-radius: 4px;
       padding: 16px 18px; margin-bottom: 12px;
@@ -413,6 +526,7 @@ def enviar_email(contenido_html: str):
       font-style: italic; color: #c8a84b; font-size: 13px;
     }}
 
+    /* ── FOOTER ───────────────────────────────────── */
     .footer {{ background: #111; padding: 18px 32px; text-align: center; }}
     .footer p {{
       font-family: 'IBM Plex Mono', monospace;
@@ -422,6 +536,7 @@ def enviar_email(contenido_html: str):
 </head>
 <body>
   <div class="wrapper">
+
     <div class="masthead">
       <div class="masthead-title">The Daily Brief</div>
       <div class="masthead-sub">Economía · Mercados · México · Global</div>
@@ -435,10 +550,11 @@ def enviar_email(contenido_html: str):
     <div class="footer">
       <p>
         GENERADO AUTOMÁTICAMENTE · SOLO USO PERSONAL<br>
-        Fuentes: Reuters · AP · FT · CNBC · Expansión · El Financiero · Milenio<br>
+        Fuentes: FT · CNBC · Yahoo Finance · Expansión · El Financiero · Reforma · Forbes MX<br>
         Análisis: Google Gemini 2.5 Flash
       </p>
     </div>
+
   </div>
 </body>
 </html>"""
