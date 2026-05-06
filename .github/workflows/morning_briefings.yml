@@ -2,11 +2,9 @@ name: Daily Morning Briefing
 
 on:
   schedule:
-    # 07:00 UTC = 09:00 AM Rotterdam (CEST)
     - cron: '0 7 * * *'
   workflow_dispatch:
 
-# Evita que dos ejecuciones intenten escribir en el repo al mismo tiempo
 concurrency:
   group: daily-briefing
   cancel-in-progress: false
@@ -17,7 +15,6 @@ permissions:
 jobs:
   run-briefing:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -34,11 +31,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install google-generativeai feedparser beautifulsoup4 requests
 
-      - name: Restore seen-news history
+      - name: Restore history
         run: |
           if [ -f morning_briefing_seen.json ]; then
             cp morning_briefing_seen.json ~/.morning_briefing_seen.json
-            echo "Historial restaurado"
           fi
 
       - name: Run Morning Briefing
@@ -49,27 +45,28 @@ jobs:
           GMAIL_TO:           ${{ secrets.GMAIL_TO }}
         run: python morning_briefing.py
 
-      - name: Save seen-news history back to repo
-        run: |
-          if [ -f ~/.morning_briefing_seen.json ]; then
-            cp ~/.morning_briefing_seen.json morning_briefing_seen.json
-          fi
-
       - name: Commit and push history update
         run: |
           git config --global user.name  "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # Sincronización inmediata antes de preparar el commit
-          git pull --rebase origin main
-
+          # 1. Preparamos el archivo modificado
+          if [ -f ~/.morning_briefing_seen.json ]; then
+            cp ~/.morning_briefing_seen.json morning_briefing_seen.json
+          fi
+          
           git add morning_briefing_seen.json
 
-          # Solo proceder si hubo noticias nuevas hoy
+          # 2. Hacemos el commit LOCAL. Ahora el área de trabajo está "limpia".
           if git diff --staged --quiet; then
-            echo "Sin cambios que guardar en el historial."
+            echo "Sin noticias nuevas hoy."
             exit 0
           fi
-
           git commit -m "chore: update seen news history [skip ci]"
-          git push origin main
+
+          # 3. AHORA hacemos el pull y push con reintentos para manejar el tráfico
+          for i in {1..5}; do
+            git pull --rebase origin main && git push origin main && break
+            echo "Colisión detectada, reintentando en 5s..."
+            sleep 5
+          done
