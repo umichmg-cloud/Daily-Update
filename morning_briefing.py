@@ -324,7 +324,14 @@ IMPORTANTE sobre los hipervínculos:
 - NUNCA inventes URLs. Usa EXACTAMENTE el URL que viene en los datos.
 
 ESTRUCTURA DEL BRIEFING:
-
+PASO 0 — SELECCIÓN EDITORIAL (no aparece en el output):
+Antes de escribir el briefing, analiza todos los artículos recibidos y selecciona
+los 10-12 más relevantes según estos criterios:
+  - Impacto macroeconómico real y medible
+  - Novedad genuina (no seguimiento de algo ya cubierto)
+  - Relevancia directa para México o mercados globales
+  - Potencial de conversación o análisis, no solo reporte de precio
+Ignora el resto. No menciones este proceso en el output final.
 1. PORTADA
    <div class="sec">
      <div class="sec-label">Portada</div>
