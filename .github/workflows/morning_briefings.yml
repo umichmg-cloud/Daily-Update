@@ -3,11 +3,11 @@ name: Daily Morning Briefing
 on:
   schedule:
     # 07:00 UTC = 09:00 AM Rotterdam (CEST) / 02:00 AM Ciudad de México (CDT)
-    - cron: '0 7 * * 0-6'  # Lunes a viernes
-  workflow_dispatch:        # Botón manual para probar cuando quieras
+    - cron: '0 7 * * *'
+  workflow_dispatch: # Botón manual para probar cuando quieras
 
 permissions:
-  contents: write           # Necesario para guardar el historial de noticias
+  contents: write   # Vital para poder guardar el historial .json en el repo
 
 jobs:
   run-briefing:
@@ -17,7 +17,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # Usamos fetch-depth: 0 para que git tenga todo el historial y pueda hacer el rebase
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -52,10 +53,15 @@ jobs:
             cp ~/.morning_briefing_seen.json morning_briefing_seen.json
           fi
 
-      - name: Commit history update
+      - name: Commit and push history update
         run: |
           git config --global user.name  "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # EVITA EL ERROR DE REJECTED:
+          # Trae cualquier cambio manual que hayas hecho en la web antes de subir el JSON
+          git pull --rebase origin main
+          
           git add morning_briefing_seen.json
-          git diff --staged --quiet || git commit -m "chore: update seen news history [skip ci]"
-          git push
+          # Solo hace commit si el archivo cambió realmente
+          git diff --staged --quiet || (git commit -m "chore: update seen news history [skip ci]" && git push origin main)
