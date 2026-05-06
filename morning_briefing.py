@@ -1,6 +1,6 @@
 """
-MORNING BRIEFING — MODO TEST (sin Gemini, sin tokens)
-Verifica: RSS fetch → filtrado → email HTML
+MORNING BRIEFING — Tu periódico financiero personal
+Cubre: México + EE.UU. | Mercados + Opinión + Ideas de conversación
 """
 
 import feedparser
@@ -12,11 +12,14 @@ import time
 from pathlib import Path
 
 import requests
+import google.api_core.exceptions
 from bs4 import BeautifulSoup
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+import google.generativeai as genai
 
 # ─── CONFIGURACIÓN ────────────────────────────────────────────────────────────
+GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 GMAIL_USER = os.getenv("GMAIL_FROM")
 GMAIL_PASS = os.getenv("GMAIL_APP_PASSWORD")
 RECIPIENT  = os.getenv("GMAIL_TO")
@@ -25,30 +28,63 @@ VISTAS_PATH = Path.home() / ".morning_briefing_seen.json"
 
 # ─── FUENTES RSS ──────────────────────────────────────────────────────────────
 RSS_FEEDS = {
+    # ── México ────────────────────────────────────────────────────────────────
     "Expansión":           "https://expansion.mx/rss",
     "El Financiero Eco":   "https://www.elfinanciero.com.mx/arc/outboundfeeds/rss/?outputType=xml&hierarchy=economia",
     "El Financiero Mdo":   "https://www.elfinanciero.com.mx/arc/outboundfeeds/rss/?outputType=xml&hierarchy=mercados",
     "Forbes México":       "https://www.forbes.com.mx/feed/",
     "El Economista":       "https://www.eleconomista.com.mx/rss/economia.xml",
     "Reforma Negocios":    "https://www.reforma.com/rss/negocios.xml",
+
+    # ── EE.UU. / Global ───────────────────────────────────────────────────────
     "FT Markets":          "https://www.ft.com/markets?format=rss",
     "CNBC Economy":        "https://www.cnbc.com/id/20910258/device/rss/rss.html",
     "Yahoo Finance":       "https://finance.yahoo.com/news/rssindex",
     "Reuters Business":    "https://feeds.reuters.com/reuters/businessNews",
+
+    # ── Análisis económico ────────────────────────────────────────────────────
     "Econbrowser":         "https://econbrowser.com/feed",
+
+    # ── Opinión: México ───────────────────────────────────────────────────────
+    # Macario Schettino — análisis político-económico MX + geopolítica
+    # Activo: publica varias veces por semana, última entrada Mayo 4, 2026
     "Macario Schettino":   "https://macario.substack.com/feed",
+
+    # ECONOMEX / Alejandro Gómez Tamez — economía MX + geopolítica
+    # Activo: última entrada Mayo 3, 2026. Cubre TMEC, Pemex, política fiscal
     "ECONOMEX":            "https://economex.substack.com/feed",
+
+    # ── Opinión: Global ───────────────────────────────────────────────────────
+    # Michael Burry (Cassandra Unchained) — burbujas, mercados, historia
+    # Activo: 270K+ suscriptores, #1 Rising Finance en Substack
+    # ⚠️  Contenido mayormente de pago — RSS da título + intro solamente
     "Michael Burry":       "https://michaeljburry.substack.com/feed",
+
+    # Adam Tooze (Chartbook) — economía global, geopolítica, historia económica
+    # Activo: ~100 posts/año, última entrada hace 2 semanas
     "Adam Tooze":          "https://adamtooze.substack.com/feed",
+
+    # Noah Smith (Noahpinion) — macro, política industrial, economía laboral
+    # Activo: publica 2-3 veces por semana
     "Noah Smith":          "https://noahpinion.substack.com/feed",
+
+    # Paul Krugman — política fiscal, comercio, macro EE.UU.
+    # Activo: publica casi diario
     "Paul Krugman":        "https://paulkrugman.substack.com/feed",
 }
 
+# Fuentes de opinión: pasan el filtro automáticamente si no están en blacklist.
+# No dependen de keywords — cualquier artículo reciente de estas fuentes entra.
 OPINION_SOURCES = {
-    "Macario Schettino", "ECONOMEX", "Michael Burry",
-    "Adam Tooze", "Noah Smith", "Paul Krugman",
+    "Macario Schettino",
+    "ECONOMEX",
+    "Michael Burry",
+    "Adam Tooze",
+    "Noah Smith",
+    "Paul Krugman",
 }
 
+# ─── FILTROS ──────────────────────────────────────────────────────────────────
 KEYWORDS_MEXICO = [
     "mexico", "méxico", "banxico", "mxn", "peso mexicano", "pemex",
     "sheinbaum", "usmca", "t-mec", "nearshoring", "citibanamex",
@@ -65,23 +101,39 @@ KEYWORDS_MACRO = [
     "central bank", "monetary policy",
 ]
 BLACKLIST = [
+    # Temas irrelevantes
     "crypto", "bitcoin", "nft", "soccer", "celebrity",
     "lifestyle", "fashion", "kardashian", "horoscope",
-    "mortgage and refinance", "best high-yield savings", "best cd rate",
-    "heloc and home equity", "best money market", "mortgage rate sale",
-    "when will mortgage", "historical mortgage", "savings rate today",
-    "analyst report:", "stock forecast", "earnings call highlights",
-    "world cup", "masterchef", "rose farts",
+    # Yahoo Finance: variantes de artículos de tasas genéricas
+    "mortgage and refinance",
+    "best high-yield savings",
+    "best cd rate",
+    "heloc and home equity",
+    "best money market",
+    "mortgage rate sale",
+    "when will mortgage",
+    "historical mortgage",
+    "savings rate today",
+    # Otros
+    "analyst report:",
+    "stock forecast",
+    "earnings call highlights",
+    "world cup",
+    "masterchef",
+    "rose farts",
 ]
 
-MAX_ARTICLES_PER_FEED = 3
-MAX_TOTAL_ARTICLES    = 25
-HORAS_MAX_ARTICULO    = 72
+MAX_ARTICLES_PER_FEED  = 3    # Tope por fuente para evitar dominancia de una sola
+MAX_TOTAL_ARTICLES     = 25   # Tope global — opinión necesita algo más de espacio
+SCRAPE_TIMEOUT         = 8
+HORAS_MAX_ARTICULO     = 72
+CUERPO_CHARS           = 450  # Balance entre contexto real y no saturar el prompt
 
 
-# ─── MEMORIA ──────────────────────────────────────────────────────────────────
+# ─── MEMORIA ANTI-REPETICIÓN ──────────────────────────────────────────────────
 
 def cargar_vistos() -> set:
+    """Carga URLs ya procesadas, descartando las de más de 7 días."""
     try:
         data = json.loads(VISTAS_PATH.read_text())
         hace_7_dias = (datetime.date.today() - datetime.timedelta(days=7)).isoformat()
@@ -91,6 +143,7 @@ def cargar_vistos() -> set:
 
 
 def guardar_vistos(urls_nuevas: set, urls_previas: set):
+    """Persiste todas las URLs vistas con la fecha de hoy."""
     hoy = datetime.date.today().isoformat()
     try:
         data = json.loads(VISTAS_PATH.read_text())
@@ -104,19 +157,35 @@ def guardar_vistos(urls_nuevas: set, urls_previas: set):
 # ─── FILTRADO ─────────────────────────────────────────────────────────────────
 
 def es_relevante(texto: str, fuente: str = "") -> tuple:
-    t = texto.lower().replace("new mexico", "new_mexico")
+    """
+    Retorna (es_relevante: bool, categoria: str).
+    Categorías posibles: 'mexico', 'macro', 'opinion'.
+
+    El blacklist se evalúa SIEMPRE primero, sin excepción.
+    Las fuentes de opinión pasan automáticamente si no están en blacklist.
+    """
+    t = texto.lower()
+    t = t.replace("new mexico", "new_mexico")
+
+    # ── 1. Blacklist: prioridad absoluta sobre todo lo demás ──────────────────
     if any(bl in t for bl in BLACKLIST):
         return False, ""
+
+    # ── 2. Fuentes de opinión: pasan sin necesidad de keywords ───────────────
     if fuente in OPINION_SOURCES:
         return True, "opinion"
+
+    # ── 3. Keywords temáticas para el resto de fuentes ───────────────────────
     if any(kw in t for kw in KEYWORDS_MEXICO):
         return True, "mexico"
     if any(kw in t for kw in KEYWORDS_MACRO):
         return True, "macro"
+
     return False, ""
 
 
 def es_reciente(entry) -> bool:
+    """True si el artículo fue publicado en las últimas HORAS_MAX_ARTICULO horas."""
     publicado = entry.get("published_parsed")
     if not publicado:
         return True
@@ -127,26 +196,83 @@ def es_reciente(entry) -> bool:
     return antiguedad <= HORAS_MAX_ARTICULO * 3600
 
 
-# ─── FETCH ────────────────────────────────────────────────────────────────────
+# ─── SCRAPING DEL ARTÍCULO COMPLETO ──────────────────────────────────────────
+
+def scrape_articulo(url: str) -> str:
+    """
+    Intenta leer el cuerpo completo del artículo.
+    Retorna texto limpio o string vacío si falla/paywall.
+    Los Substacks de pago solo expondrán el intro — es suficiente para el briefing.
+    """
+    try:
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            )
+        }
+        resp = requests.get(url, headers=headers, timeout=SCRAPE_TIMEOUT)
+        if resp.status_code != 200:
+            return ""
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        for tag in soup(["script", "style", "nav", "footer", "header",
+                         "aside", "form", "iframe", "noscript"]):
+            tag.decompose()
+
+        content = ""
+        for selector in [
+            "article",
+            "[class*='article-body']",
+            "[class*='story-body']",
+            "[class*='content-body']",
+            "[class*='entry-content']",
+            "[class*='post-content']",
+            "main",
+        ]:
+            found = soup.select_one(selector)
+            if found:
+                content = found.get_text(separator=" ", strip=True)
+                break
+
+        if not content:
+            content = soup.get_text(separator=" ", strip=True)
+
+        words = content.split()
+        return " ".join(words[:600])
+
+    except Exception:
+        return ""
+
+
+# ─── FETCH DE NOTICIAS ────────────────────────────────────────────────────────
 
 def fetch_noticias(urls_vistas: set) -> tuple:
+    """
+    Retorna (noticias: dict, urls_nuevas: set).
+    Aplica tope global MAX_TOTAL_ARTICLES para no saturar Gemini.
+    """
     noticias    = {"mexico": [], "macro": [], "opinion": []}
     urls_nuevas = set()
 
     for fuente, feed_url in RSS_FEEDS.items():
-        if sum(len(v) for v in noticias.values()) >= MAX_TOTAL_ARTICLES:
-            print(f"\n   ⛔ Tope de {MAX_TOTAL_ARTICLES} artículos alcanzado.")
+        total_actual = sum(len(v) for v in noticias.values())
+        if total_actual >= MAX_TOTAL_ARTICLES:
+            print(f"\n   ⛔ Tope de {MAX_TOTAL_ARTICLES} artículos alcanzado, deteniendo fetch.")
             break
 
         print(f"\n   📡 {fuente}")
         try:
             feed = feedparser.parse(feed_url)
         except Exception as e:
-            print(f"      ⚠️  Error: {e}")
+            print(f"      ⚠️  Error leyendo feed: {e}")
             continue
 
-        print(f"      → {len(feed.entries)} entradas")
-        if not feed.entries:
+        print(f"      → {len(feed.entries)} entradas en el feed")
+
+        if len(feed.entries) == 0:
             print("      ⚠️  Feed vacío o URL incorrecta")
             continue
 
@@ -164,11 +290,13 @@ def fetch_noticias(urls_vistas: set) -> tuple:
             if link and link in urls_vistas:
                 print(f"      ⏭️  Ya visto:      {titulo[:55]}")
                 continue
+
             if not es_reciente(entry):
                 pub = entry.get("published", "sin fecha")
                 print(f"      🕰️  Muy viejo:     {titulo[:45]} [{pub[:16]}]")
                 continue
 
+            # Pasamos fuente explícitamente para el manejo de opinión
             relevante, categoria = es_relevante(titulo + " " + resumen, fuente)
             if not relevante:
                 print(f"      🚫 No relevante:  {titulo[:55]}")
@@ -177,12 +305,17 @@ def fetch_noticias(urls_vistas: set) -> tuple:
             emoji = {"mexico": "🇲🇽", "macro": "🌎", "opinion": "💬"}.get(categoria, "✅")
             print(f"      {emoji} [{categoria.upper():7}]  {titulo[:55]}")
 
+            cuerpo = ""
+            if link:
+                cuerpo = scrape_articulo(link)
+                time.sleep(0.4)
+
             noticias[categoria].append({
                 "fuente":  fuente,
                 "titulo":  titulo,
                 "resumen": resumen,
                 "url":     link,
-                "cuerpo":  resumen,   # Sin scraping en modo test
+                "cuerpo":  cuerpo if cuerpo else resumen,
             })
 
             if link:
@@ -192,108 +325,181 @@ def fetch_noticias(urls_vistas: set) -> tuple:
     return noticias, urls_nuevas
 
 
-# ─── MOCK GEMINI — HTML estático de prueba ────────────────────────────────────
+# ─── FORMATEAR PARA GEMINI ────────────────────────────────────────────────────
 
-def generar_analisis_mock(noticias: dict) -> str:
+def formatear_para_prompt(noticias: dict) -> str:
     """
-    Reemplaza la llamada a Gemini por un briefing HTML de prueba.
-    Usa los artículos reales que SÍ descargaste, así puedes ver qué llegó.
-    No consume ningún token de Gemini.
+    Formatea los artículos para el prompt de Gemini.
+    Incluye el URL para que Gemini pueda generar hipervínculos.
     """
+    labels = {
+        "mexico":  "NOTICIAS MÉXICO",
+        "macro":   "MACRO / EE.UU.",
+        "opinion": "OPINIÓN Y ANÁLISIS",
+    }
+    bloques = []
+    for categoria, articulos in noticias.items():
+        if not articulos:
+            continue
+        label = labels.get(categoria, categoria.upper())
+        bloques.append(f"\n{'='*60}\n{label}\n{'='*60}")
+        for a in articulos:
+            bloques.append(
+                f"\nFUENTE: {a['fuente']}\n"
+                f"TÍTULO: {a['titulo']}\n"
+                f"URL: {a['url']}\n"
+                f"CONTENIDO: {a['cuerpo'][:CUERPO_CHARS]}..."
+            )
+    return "\n".join(bloques)
+
+
+# ─── ANÁLISIS CON GEMINI ──────────────────────────────────────────────────────
+
+def generar_analisis(noticias: dict) -> str:
+    """
+    Llama a Gemini con retry automático en caso de timeout.
+    """
+    genai.configure(api_key=GEMINI_KEY)
+    model = genai.GenerativeModel('gemini-2.5-flash')
+
+    noticias_texto = formatear_para_prompt(noticias)
     fecha = datetime.date.today().strftime("%A, %d de %B de %Y")
 
-    def make_arts(articulos, tag_class, tag_label):
-        if not articulos:
-            return f'<p style="color:#888;font-size:13px">No se encontraron artículos en esta categoría hoy.</p>'
-        html = ""
-        for a in articulos[:4]:
-            url = a["url"] or "#"
-            html += f"""
-            <div class="art">
-              <span class="tag {tag_class}">{tag_label}</span>
-              <span class="art-title">{a["titulo"]}</span>
-              <p class="art-body">{a["resumen"] or "Sin resumen disponible."}</p>
-              <a href="{url}" class="read-more" target="_blank">Leer artículo completo →</a>
-            </div>"""
-        return html
+    hay_opinion = bool(noticias.get("opinion"))
 
-    mx_arts  = make_arts(noticias.get("mexico",  []), "tag-mx", "MÉXICO")
-    us_arts  = make_arts(noticias.get("macro",   []), "tag-us", "GLOBAL")
-    op_arts  = make_arts(noticias.get("opinion", []), "tag-op", "OPINIÓN")
+    seccion_opinion = """
+4. OPINIÓN Y ANÁLISIS
+   <div class="sec">
+     <div class="sec-label">Opinión y análisis</div>
+     2-3 piezas de los líderes de opinión del día usando estructura art con tag-op.
+     No resumir: interpretar. ¿Qué argumento hace el autor? ¿Con qué evidencia?
+     ¿Por qué importa su punto de vista hoy, en este contexto?
+     Cada pieza con su <a class="read-more">.
+   </div>
+""" if hay_opinion else ""
 
-    total = sum(len(v) for v in noticias.values())
+    numeracion_tp   = "5" if hay_opinion else "4"
+    numeracion_sig  = "6" if hay_opinion else "5"
 
-    return f"""
-<div class="sec">
-  <div class="sec-label">⚠️ Modo Test — Sin Gemini</div>
-  <p class="lead-text">
-    Este es un briefing de prueba generado sin llamar a Gemini.
-    El pipeline de RSS funcionó correctamente y encontró <strong>{total} artículos</strong>
-    ({len(noticias.get("mexico",[]))} MX · {len(noticias.get("macro",[]))} macro ·
-    {len(noticias.get("opinion",[]))} opinión).
-    Si ves esto en tu bandeja de entrada, el sistema funciona de extremo a extremo. ✅
-  </p>
+    prompt = f"""
+Eres el editor en jefe de un periódico financiero de élite, como el FT o Reforma Financiero.
+Hoy es {fecha}.
+
+Tu tarea: escribir el briefing matutino en HTML para un lector que es un profesional de finanzas
+o economía en formación. El tono es el de un buen periódico: claro, directo, inteligente —
+sin jerga de trading ni buzzwords corporativos.
+
+El lector usa este briefing para:
+  1. Mantenerse al día con lo que importa
+  2. Tener IDEAS sobre qué hablar en entrevistas o conversaciones de negocios
+  3. Entender el contexto detrás de los números
+  4. Profundizar en los temas que le interesen (por eso cada artículo debe tener su hiperlink)
+
+INSTRUCCIONES DE FORMATO:
+- Escribe SOLO HTML interno (sin <html>, <head> ni <body>)
+- USA estas clases CSS que ya existen en la plantilla:
+    sec, sec-label, lead-text, art, art-title, art-body, tag tag-mx, tag tag-us, tag tag-op,
+    tp, tp-num, tp-title, tp-body, tp-q, read-more
+- NO uses Markdown, asteriscos ni guiones como listas.
+
+ESTRUCTURA DE CADA ARTÍCULO/TEMA:
+<div class="art">
+  <span class="tag tag-mx">MÉXICO</span>   <!-- tag-mx / tag-us / tag-op según corresponda -->
+  <span class="art-title">Título del tema</span>
+  <p class="art-body">2-3 oraciones de análisis real, no solo resumen. Explica la causa,
+  el impacto y por qué le importa al lector.</p>
+  <a href="URL_DEL_ARTÍCULO_FUENTE" class="read-more" target="_blank">Leer artículo completo →</a>
 </div>
 
-<div class="sec">
-  <div class="sec-label">México hoy</div>
-  {mx_arts}
-</div>
+IMPORTANTE sobre los hipervínculos:
+- Cada artículo/tema DEBE terminar con el tag <a class="read-more"> apuntando al URL real
+  que viene en el campo URL de cada noticia.
+- Si un tema sintetiza varias noticias, pon el link de la más relevante.
+- NUNCA inventes URLs. Usa EXACTAMENTE el URL que viene en los datos.
 
-<div class="sec">
-  <div class="sec-label">El mundo</div>
-  {us_arts}
-</div>
+ESTRUCTURA DEL BRIEFING:
 
-<div class="sec">
-  <div class="sec-label">Opinión y análisis</div>
-  {op_arts}
-</div>
+PASO 0 — SELECCIÓN EDITORIAL (no aparece en el output):
+Antes de escribir, analiza todos los artículos y selecciona los 10-12 más relevantes según:
+  - Impacto macroeconómico real y medible
+  - Novedad genuina (no seguimiento de algo ya cubierto)
+  - Relevancia directa para México o mercados globales
+  - Potencial de conversación o análisis, no solo reporte de precio
+Ignora el resto. No menciones este proceso en el output.
 
-<div class="sec">
-  <div class="sec-label">Talking points de prueba</div>
-  <div class="tp">
-    <div class="tp-num">01 / TEST</div>
-    <div class="tp-title">El pipeline funciona</div>
-    <p class="tp-body">
-      Se descargaron {total} artículos de {len([f for f in RSS_FEEDS])} fuentes RSS,
-      se filtraron por keywords y blacklist, y el email llegó correctamente formateado.
-    </p>
-    <p class="tp-q">¿Qué pasa cuando reemplazas esta función mock por la llamada real a Gemini?</p>
-  </div>
-  <div class="tp">
-    <div class="tp-num">02 / SIGUIENTE PASO</div>
-    <div class="tp-title">Activar Gemini</div>
-    <p class="tp-body">
-      Cuando confirmes que el email se ve bien, reemplaza <code>generar_analisis_mock()</code>
-      por <code>generar_analisis()</code> en el main() y restaura el import de google.generativeai.
-    </p>
-    <p class="tp-q">¿El diseño del email se renderiza correctamente en tu cliente de correo?</p>
-  </div>
-</div>
+1. PORTADA
+   <div class="sec">
+     <div class="sec-label">Portada</div>
+     <p class="lead-text">Un párrafo editorial con la historia más importante del día
+     y por qué importa. Sin hiperlink aquí.</p>
+   </div>
 
-<div class="sec">
-  <div class="sec-label">Para seguir esta semana</div>
-  <div class="art">
-    <span class="tag tag-us">TEST</span>
-    <span class="art-title">Verificar que el historial se guarda</span>
-    <p class="art-body">
-      Revisa tu repo en GitHub — debe haber un commit automático que actualiza
-      <code>morning_briefing_seen.json</code> con las {total} URLs procesadas hoy.
-    </p>
-    <a href="https://github.com" class="read-more" target="_blank">Ver repo en GitHub →</a>
-  </div>
-</div>
+2. MÉXICO HOY
+   <div class="sec">
+     <div class="sec-label">México hoy</div>
+     3-4 temas usando la estructura art. Usa tag-mx.
+     Incluye: peso/tipo de cambio, Banxico, política económica, nearshoring, lo que haya.
+   </div>
+
+3. EL MUNDO
+   <div class="sec">
+     <div class="sec-label">El mundo</div>
+     3-4 temas macro: Fed, economía americana, commodities, geopolítica económica.
+     Usa tag-us. Cada uno con su <a class="read-more">.
+   </div>
+
+{seccion_opinion}
+
+{numeracion_tp}. DE QUÉ HABLAR HOY
+   <div class="sec">
+     <div class="sec-label">De qué hablar hoy</div>
+     3 talking points usando esta estructura:
+     <div class="tp">
+       <div class="tp-num">01 / TALKING POINT</div>
+       <div class="tp-title">Título del tema</div>
+       <p class="tp-body">Qué pasó y por qué importa.</p>
+       <p class="tp-q">Una pregunta inteligente que puedes hacer o que te pueden hacer.</p>
+     </div>
+   </div>
+
+{numeracion_sig}. PARA SEGUIR ESTA SEMANA
+   <div class="sec">
+     <div class="sec-label">Para seguir esta semana</div>
+     2-3 temas de fondo en formato art con su read-more.
+   </div>
+
+NOTICIAS DEL DÍA (con URLs para los hipervínculos):
+{noticias_texto}
 """
 
+    for intento in range(3):
+        try:
+            print(f"   Intento {intento + 1}/3...")
+            response = model.generate_content(
+                prompt,
+                request_options={"timeout": 180}
+            )
+            return response.text
+        except google.api_core.exceptions.DeadlineExceeded:
+            print(f"   ⚠️  Timeout en Gemini (intento {intento + 1}/3)")
+            if intento < 2:
+                print("   Esperando 15s antes de reintentar...")
+                time.sleep(15)
+        except Exception as e:
+            print(f"   ⚠️  Error inesperado: {e}")
+            if intento < 2:
+                time.sleep(15)
 
-# ─── EMAIL ────────────────────────────────────────────────────────────────────
+    raise Exception("❌ Gemini no respondió después de 3 intentos. Revisa tu API key y cuota.")
+
+
+# ─── EMAIL HTML ───────────────────────────────────────────────────────────────
 
 def enviar_email(contenido_html: str):
     msg = MIMEMultipart()
     msg['From']    = GMAIL_USER
     msg['To']      = RECIPIENT
-    msg['Subject'] = f"[TEST] The Daily Brief | {datetime.date.today().strftime('%d %b %Y')}"
+    msg['Subject'] = f"The Daily Brief | {datetime.date.today().strftime('%d %b %Y')}"
 
     fecha_larga = datetime.date.today().strftime("%A, %d de %B de %Y").upper()
 
@@ -304,66 +510,174 @@ def enviar_email(contenido_html: str):
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Source+Serif+4:ital,opsz,wght@0,8..60,300;0,8..60,400;1,8..60,300&family=IBM+Plex+Mono:wght@400&display=swap');
+
     * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-    body {{ background: #f0ebe0; font-family: 'Source Serif 4', Georgia, serif; color: #1a1a1a; font-size: 15px; line-height: 1.65; }}
-    .wrapper {{ max-width: 640px; margin: 0 auto; background: #faf7f2; }}
-    .masthead {{ background: #111; padding: 28px 32px 20px; text-align: center; border-bottom: 3px solid #c8a84b; }}
-    .masthead-title {{ font-family: 'Playfair Display', Georgia, serif; font-size: 30px; font-weight: 900; color: #faf7f2; letter-spacing: 3px; text-transform: uppercase; }}
-    .masthead-sub {{ font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #c8a84b; letter-spacing: 2px; margin-top: 6px; }}
-    .masthead-date {{ font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #666; margin-top: 4px; letter-spacing: 1px; }}
+
+    body {{
+      background: #f0ebe0;
+      font-family: 'Source Serif 4', Georgia, serif;
+      color: #1a1a1a;
+      font-size: 15px;
+      line-height: 1.65;
+    }}
+
+    .wrapper {{
+      max-width: 640px;
+      margin: 0 auto;
+      background: #faf7f2;
+    }}
+
+    /* ── MASTHEAD ─────────────────────────────────── */
+    .masthead {{
+      background: #111;
+      padding: 28px 32px 20px;
+      text-align: center;
+      border-bottom: 3px solid #c8a84b;
+    }}
+    .masthead-title {{
+      font-family: 'Playfair Display', Georgia, serif;
+      font-size: 30px; font-weight: 900;
+      color: #faf7f2; letter-spacing: 3px; text-transform: uppercase;
+    }}
+    .masthead-sub {{
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 9px; color: #c8a84b; letter-spacing: 2px; margin-top: 6px;
+    }}
+    .masthead-date {{
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 9px; color: #666; margin-top: 4px; letter-spacing: 1px;
+    }}
+
+    /* ── CONTENIDO ────────────────────────────────── */
     .body-content {{ padding: 28px 32px; }}
-    .sec {{ margin-bottom: 28px; padding-bottom: 24px; border-bottom: 1px solid #ddd8cc; }}
+
+    .sec {{
+      margin-bottom: 28px;
+      padding-bottom: 24px;
+      border-bottom: 1px solid #ddd8cc;
+    }}
     .sec:last-child {{ border-bottom: none; margin-bottom: 0; }}
-    .sec-label {{ font-family: 'IBM Plex Mono', monospace; font-size: 9px; letter-spacing: 3px; text-transform: uppercase; color: #c8a84b; margin-bottom: 14px; padding-bottom: 6px; border-bottom: 1px solid #c8a84b; }}
-    .lead-text {{ font-size: 16px; font-weight: 300; font-style: italic; color: #222; line-height: 1.75; }}
-    .art {{ margin-bottom: 20px; padding-left: 12px; border-left: 2px solid #ddd8cc; }}
-    .art-title {{ font-family: 'Playfair Display', Georgia, serif; font-size: 14px; font-weight: 700; display: block; margin-bottom: 5px; color: #1a1a1a; }}
-    .art-body {{ font-size: 13px; line-height: 1.65; color: #444; margin-bottom: 6px; }}
-    .read-more {{ display: inline-block; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 1px; color: #c8a84b; text-decoration: none; border-bottom: 1px solid #c8a84b; padding-bottom: 1px; }}
-    .tag {{ display: inline-block; font-family: 'IBM Plex Mono', monospace; font-size: 8px; letter-spacing: 1.5px; text-transform: uppercase; padding: 2px 6px; border-radius: 2px; margin-bottom: 6px; }}
-    .tag-mx {{ background: #006847; color: #d0ead8; }}
-    .tag-us {{ background: #1a3a6b; color: #ccdcf0; }}
-    .tag-op {{ background: #5a3010; color: #f0dcc8; }}
-    .tp {{ background: #111; border-radius: 4px; padding: 16px 18px; margin-bottom: 12px; }}
-    .tp-num {{ font-family: 'IBM Plex Mono', monospace; font-size: 8px; letter-spacing: 2px; color: #c8a84b; text-transform: uppercase; margin-bottom: 6px; }}
-    .tp-title {{ font-family: 'Playfair Display', Georgia, serif; font-size: 14px; font-weight: 700; color: #faf7f2; margin-bottom: 8px; }}
+
+    .sec-label {{
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 9px; letter-spacing: 3px; text-transform: uppercase;
+      color: #c8a84b; margin-bottom: 14px;
+      padding-bottom: 6px; border-bottom: 1px solid #c8a84b;
+    }}
+
+    .lead-text {{
+      font-size: 16px; font-weight: 300; font-style: italic;
+      color: #222; line-height: 1.75;
+    }}
+
+    /* ── ARTÍCULOS ────────────────────────────────── */
+    .art {{
+      margin-bottom: 20px;
+      padding-left: 12px;
+      border-left: 2px solid #ddd8cc;
+    }}
+    .art-title {{
+      font-family: 'Playfair Display', Georgia, serif;
+      font-size: 14px; font-weight: 700;
+      display: block; margin-bottom: 5px; color: #1a1a1a;
+    }}
+    .art-body {{
+      font-size: 13px; line-height: 1.65; color: #444;
+      margin-bottom: 6px;
+    }}
+
+    /* ── HIPERVÍNCULO "LEER MÁS" ──────────────────── */
+    .read-more {{
+      display: inline-block;
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 10px; letter-spacing: 1px;
+      color: #c8a84b;
+      text-decoration: none;
+      border-bottom: 1px solid #c8a84b;
+      padding-bottom: 1px;
+    }}
+
+    /* ── TAGS ─────────────────────────────────────── */
+    .tag {{
+      display: inline-block;
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 8px; letter-spacing: 1.5px; text-transform: uppercase;
+      padding: 2px 6px; border-radius: 2px; margin-bottom: 6px;
+    }}
+    .tag-mx  {{ background: #006847; color: #d0ead8; }}
+    .tag-us  {{ background: #1a3a6b; color: #ccdcf0; }}
+    .tag-op  {{ background: #5a3010; color: #f0dcc8; }}
+
+    /* ── TALKING POINTS ───────────────────────────── */
+    .tp {{
+      background: #111; border-radius: 4px;
+      padding: 16px 18px; margin-bottom: 12px;
+    }}
+    .tp-num {{
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 8px; letter-spacing: 2px; color: #c8a84b;
+      text-transform: uppercase; margin-bottom: 6px;
+    }}
+    .tp-title {{
+      font-family: 'Playfair Display', Georgia, serif;
+      font-size: 14px; font-weight: 700; color: #faf7f2; margin-bottom: 8px;
+    }}
     .tp-body {{ font-size: 13px; line-height: 1.6; color: #ccc; }}
-    .tp-q {{ margin-top: 10px; padding-top: 10px; border-top: 1px solid #2a2a2a; font-style: italic; color: #c8a84b; font-size: 13px; }}
+    .tp-q {{
+      margin-top: 10px; padding-top: 10px;
+      border-top: 1px solid #2a2a2a;
+      font-style: italic; color: #c8a84b; font-size: 13px;
+    }}
+
+    /* ── FOOTER ───────────────────────────────────── */
     .footer {{ background: #111; padding: 18px 32px; text-align: center; }}
-    .footer p {{ font-family: 'IBM Plex Mono', monospace; font-size: 8px; color: #555; letter-spacing: 0.5px; line-height: 1.9; }}
+    .footer p {{
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 8px; color: #555; letter-spacing: 0.5px; line-height: 1.9;
+    }}
   </style>
 </head>
 <body>
   <div class="wrapper">
+
     <div class="masthead">
       <div class="masthead-title">The Daily Brief</div>
-      <div class="masthead-sub">⚠️ TEST MODE — Sin Gemini</div>
+      <div class="masthead-sub">Economía · Mercados · México · Global</div>
       <div class="masthead-date">{fecha_larga}</div>
     </div>
-    <div class="body-content">{contenido_html}</div>
+
+    <div class="body-content">
+      {contenido_html}
+    </div>
+
     <div class="footer">
       <p>
-        MODO TEST · SIN TOKENS GEMINI · SOLO VERIFICACIÓN DE PIPELINE<br>
-        Fuentes RSS activas · Filtrado funcional · Email HTML verificado
+        GENERADO AUTOMÁTICAMENTE · SOLO USO PERSONAL<br>
+        Fuentes: FT · Reuters · CNBC · Econbrowser · Expansión · El Financiero · Reforma<br>
+        Opinión: Burry · Tooze · Krugman · Noah Smith · Schettino · ECONOMEX<br>
+        Análisis: Google Gemini 2.5 Flash
       </p>
     </div>
+
   </div>
 </body>
 </html>"""
 
     msg.attach(MIMEText(html, 'html'))
+
     with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
         server.login(GMAIL_USER, GMAIL_PASS)
         server.send_message(msg)
-    print(f"   ✅ Email TEST enviado a {RECIPIENT}")
+
+    print(f"   ✅ Email enviado a {RECIPIENT}")
 
 
 # ─── MAIN ─────────────────────────────────────────────────────────────────────
 
 def main():
-    print("\n🧪 Morning Briefing — MODO TEST (sin Gemini)\n")
+    print("\n🗞️  Morning Briefing — iniciando...\n")
 
-    print("💾 Cargando historial...")
+    print("💾 Cargando historial de noticias vistas...")
     urls_vistas = cargar_vistos()
     print(f"   {len(urls_vistas)} URLs en memoria.\n")
 
@@ -376,26 +690,25 @@ def main():
     total         = total_mx + total_macro + total_opinion
 
     print(f"\n{'─'*50}")
+    if total == 0:
+        print("❌ Sin noticias nuevas relevantes hoy.")
+        print("   Revisa los 🕰️  y 🚫 arriba para entender por qué.")
+        return
+
     print(f"✅ {total} artículos: {total_mx} MX · {total_macro} macro · {total_opinion} opinión\n")
 
-    if total == 0:
-        print("❌ Sin noticias nuevas. Revisa los feeds manualmente.")
-        # Enviamos el email de todas formas para verificar el diseño
-        print("   Enviando email de prueba vacío de todas formas...")
-
-    print("📝 Generando HTML mock (sin Gemini)...")
-    analisis = generar_analisis_mock(noticias)
+    print("🤖 Generando análisis con Gemini 2.5 Flash...")
+    analisis = generar_analisis(noticias)
 
     print("📧 Enviando email...")
     enviar_email(analisis)
 
-    print("💾 Guardando historial...")
+    print("💾 Guardando historial actualizado...")
     guardar_vistos(urls_nuevas, urls_vistas)
 
-    print("\n✅ Test completo. Revisa tu bandeja.\n")
-    print("   Cuando el email se vea bien, cambia generar_analisis_mock()")
-    print("   por generar_analisis() y restaura el import de google.generativeai.")
+    print("\n✅ ¡Listo! Revisa tu bandeja de entrada.\n")
 
 
 if __name__ == "__main__":
     main()
+
