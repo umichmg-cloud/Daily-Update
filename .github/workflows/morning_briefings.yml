@@ -2,41 +2,60 @@ name: Daily Morning Briefing
 
 on:
   schedule:
-    # 07:00 UTC = 09:00 AM Rotterdam (CEST)
-    - cron: '0 7 * * *'
-  workflow_dispatch: # Botón manual para probarlo cuando quieras
+    # 07:00 UTC = 09:00 AM Rotterdam (CEST) / 02:00 AM Ciudad de México (CDT)
+    - cron: '0 7 * * 0-6'  # Lunes a viernes
+  workflow_dispatch:        # Botón manual para probar cuando quieras
+
+permissions:
+  contents: write           # Necesario para guardar el historial de noticias
 
 jobs:
   run-briefing:
     runs-on: ubuntu-latest
+
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.9'
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install google-generativeai feedparser beautifulsoup4 requests
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install google-generativeai feedparser beautifulsoup4 requests
 
-    - name: Run Morning Briefing Script
-      env:
-        # Estos nombres deben coincidir EXACTAMENTE con tus GitHub Secrets
-        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        GMAIL_FROM: ${{ secrets.GMAIL_FROM }}
-        GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-        GMAIL_TO: ${{ secrets.GMAIL_TO }}
-      run: python morning_briefing.py
+      - name: Restore seen-news history
+        run: |
+          if [ -f morning_briefing_seen.json ]; then
+            cp morning_briefing_seen.json ~/.morning_briefing_seen.json
+            echo "Historial restaurado"
+          else
+            echo "Sin historial previo, empezando desde cero"
+          fi
 
-    # PASO OPCIONAL: Guardar historial para no repetir noticias mañana
-    - name: Commit and push history update
-      run: |
-        git config --global user.name "GitHub Action"
-        git config --global user.email "action@github.com"
-        git add .morning_briefing_seen.json || exit 0
-        git commit -m "Update seen news history [skip ci]" || exit 0
-        git push
+      - name: Run Morning Briefing
+        env:
+          GEMINI_API_KEY:     ${{ secrets.GEMINI_API_KEY }}
+          GMAIL_FROM:         ${{ secrets.GMAIL_FROM }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          GMAIL_TO:           ${{ secrets.GMAIL_TO }}
+        run: python morning_briefing.py
+
+      - name: Save seen-news history back to repo
+        run: |
+          if [ -f ~/.morning_briefing_seen.json ]; then
+            cp ~/.morning_briefing_seen.json morning_briefing_seen.json
+          fi
+
+      - name: Commit history update
+        run: |
+          git config --global user.name  "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add morning_briefing_seen.json
+          git diff --staged --quiet || git commit -m "chore: update seen news history [skip ci]"
+          git push
