@@ -2,9 +2,14 @@ name: Daily Morning Briefing
 
 on:
   schedule:
-    # 07:00 UTC = 09:00 AM Rotterdam (CEST) / 02:00 AM Ciudad de México (CDT)
+    # 07:00 UTC = 09:00 AM Rotterdam (CEST)
     - cron: '0 7 * * *'
-  workflow_dispatch: # Botón manual para probar cuando quieras
+  workflow_dispatch:
+
+# Evita que dos ejecuciones intenten escribir en el repo al mismo tiempo
+concurrency:
+  group: daily-briefing
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -25,15 +30,15 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install google-generativeai feedparser beautifulsoup4 requests
 
       - name: Restore seen-news history
         run: |
           if [ -f morning_briefing_seen.json ]; then
             cp morning_briefing_seen.json ~/.morning_briefing_seen.json
             echo "Historial restaurado"
-          else
-            echo "Sin historial previo, empezando desde cero"
           fi
 
       - name: Run Morning Briefing
@@ -55,20 +60,16 @@ jobs:
           git config --global user.name  "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+          # Sincronización inmediata antes de preparar el commit
+          git pull --rebase origin main
+
           git add morning_briefing_seen.json
 
-          # Solo continúa si hay cambios reales
+          # Solo proceder si hubo noticias nuevas hoy
           if git diff --staged --quiet; then
-            echo "Sin cambios que guardar."
+            echo "Sin cambios que guardar en el historial."
             exit 0
           fi
 
           git commit -m "chore: update seen news history [skip ci]"
-
-          # Retry loop: pull --rebase justo antes de cada intento de push
-          for i in $(seq 1 5); do
-            echo "Push intento $i/5..."
-            git pull --rebase origin main && git push origin main && echo "✅ Push exitoso." && break
-            echo "⚠️  Intento $i fallido. Reintentando en 5s..."
-            sleep 5
-          done
+          git push origin main
