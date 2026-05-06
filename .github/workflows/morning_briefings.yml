@@ -50,23 +50,24 @@ jobs:
           git config --global user.name  "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # 1. Preparamos el archivo modificado
+          # 1. Mover el archivo generado al repositorio local
           if [ -f ~/.morning_briefing_seen.json ]; then
             cp ~/.morning_briefing_seen.json morning_briefing_seen.json
           fi
           
+          # 2. Añadir al área de preparación (Stage)
           git add morning_briefing_seen.json
 
-          # 2. Hacemos el commit LOCAL. Ahora el área de trabajo está "limpia".
+          # 3. Hacer el commit local para que el área de trabajo esté "limpia"
           if git diff --staged --quiet; then
             echo "Sin noticias nuevas hoy."
             exit 0
           fi
           git commit -m "chore: update seen news history [skip ci]"
 
-          # 3. AHORA hacemos el pull y push con reintentos para manejar el tráfico
+          # 4. Ahora que no hay "unstaged changes", el pull --rebase funcionará
           for i in {1..5}; do
             git pull --rebase origin main && git push origin main && break
-            echo "Colisión detectada, reintentando en 5s..."
+            echo "Colisión detectada con el remoto, reintentando en 5s..."
             sleep 5
           done
