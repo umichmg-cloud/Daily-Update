@@ -27,22 +27,62 @@ RECIPIENT  = os.getenv("GMAIL_TO")
 VISTAS_PATH = Path.home() / ".morning_briefing_seen.json"
 
 # ─── FUENTES RSS ──────────────────────────────────────────────────────────────
+
 RSS_FEEDS = {
     # ── México ────────────────────────────────────────────────────────────────
     "Expansión":           "https://expansion.mx/rss",
     "El Financiero Eco":   "https://www.elfinanciero.com.mx/arc/outboundfeeds/rss/?outputType=xml&hierarchy=economia",
     "El Financiero Mdo":   "https://www.elfinanciero.com.mx/arc/outboundfeeds/rss/?outputType=xml&hierarchy=mercados",
-    "Forbes México":       "https://www.forbes.com.mx/category/negocios/feed/",
+    "Forbes México":       "https://www.forbes.com.mx/feed/",
+    "El Economista":       "https://www.eleconomista.com.mx/rss/economia.xml",
     "Reforma Negocios":    "https://www.reforma.com/rss/negocios.xml",
 
     # ── EE.UU. / Global ───────────────────────────────────────────────────────
     "FT Markets":          "https://www.ft.com/markets?format=rss",
-    "CNBC Finance":        "https://www.cnbc.com/id/10000664/device/rss/rss.html",
+    "CNBC Economy":        "https://www.cnbc.com/id/20910258/device/rss/rss.html",
     "Yahoo Finance":       "https://finance.yahoo.com/news/rssindex",
+    "Reuters Business":    "https://feeds.reuters.com/reuters/businessNews",
 
-    # ── Opinión / Análisis ────────────────────────────────────────────────────
+    # ── Análisis económico ────────────────────────────────────────────────────
     "Econbrowser":         "https://econbrowser.com/feed",
-    "Marginal Revolution": "https://marginalrevolution.com/feed",
+
+    # ── Opinión: México ───────────────────────────────────────────────────────
+    # Macario Schettino — El Financiero + análisis político-económico MX
+    # Activo: publica varias veces por semana, última entrada Mayo 4, 2026
+    "Macario Schettino":   "https://macario.substack.com/feed",
+
+    # ECONOMEX / Alejandro Gómez Tamez — economía MX + geopolítica
+    # Activo: última entrada Mayo 3, 2026. Cubre TMEC, Pemex, política fiscal
+    "ECONOMEX":            "https://economex.substack.com/feed",
+
+    # ── Opinión: Global ───────────────────────────────────────────────────────
+    # Michael Burry (Cassandra Unchained) — burbujas, mercados, historia
+    # Activo: 270K+ suscriptores, #1 Rising Finance en Substack
+    # ⚠️  Contenido mayormente de pago ($39/mes) — RSS solo da título + intro
+    "Michael Burry":       "https://michaeljburry.substack.com/feed",
+
+    # Adam Tooze (Chartbook) — economía global, geopolítica, historia económica
+    # Activo: Chartbook #442 publicado hace 2 semanas, ~100 posts/año
+    "Adam Tooze":          "https://adamtooze.substack.com/feed",
+
+    # Noah Smith (Noahpinion) — macro, política industrial, economía laboral
+    # Activo: publica 2-3 veces por semana
+    "Noah Smith":          "https://noahpinion.substack.com/feed",
+
+    # Paul Krugman — política fiscal, comercio, macro EE.UU.
+    # Activo: publica casi diario
+    "Paul Krugman":        "https://paulkrugman.substack.com/feed",
+}
+
+# Fuentes cuyo contenido se clasifica como 'opinion' directamente
+# (no dependen de keywords, pasan si no están en blacklist)
+OPINION_SOURCES = {
+    "Macario Schettino",
+    "ECONOMEX",
+    "Michael Burry",
+    "Adam Tooze",
+    "Noah Smith",
+    "Paul Krugman",
 }
 
 # ─── FILTROS ──────────────────────────────────────────────────────────────────
