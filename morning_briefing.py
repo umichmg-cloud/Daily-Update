@@ -32,15 +32,14 @@ RSS_FEEDS = {
     "Expansión":           "https://expansion.mx/rss",
     "El Financiero Eco":   "https://www.elfinanciero.com.mx/arc/outboundfeeds/rss/?outputType=xml&hierarchy=economia",
     "El Financiero Mdo":   "https://www.elfinanciero.com.mx/arc/outboundfeeds/rss/?outputType=xml&hierarchy=mercados",
-    "Forbes México":       "https://www.forbes.com.mx/feed/",
-    "El Economista":       "https://www.eleconomista.com.mx/rss/economia.xml",
+    "El Economista":       "https://www.eleconomista.com.mx/rss/ultimas-noticias",
     "Reforma Negocios":    "https://www.reforma.com/rss/negocios.xml",
 
     # ── EE.UU. / Global ───────────────────────────────────────────────────────
     "FT Markets":          "https://www.ft.com/markets?format=rss",
     "CNBC Economy":        "https://www.cnbc.com/id/20910258/device/rss/rss.html",
     "Yahoo Finance":       "https://finance.yahoo.com/news/rssindex",
-    "Reuters Business":    "https://feeds.reuters.com/reuters/businessNews",
+    "Reuters Business":    "https://news.google.com/rss/search?q=site%3Areuters.com&hl=en-US&gl=US&ceid=US%3Aen",
 
     # ── Análisis económico ────────────────────────────────────────────────────
     "Econbrowser":         "https://econbrowser.com/feed",
@@ -48,7 +47,7 @@ RSS_FEEDS = {
     # ── Opinión: México ───────────────────────────────────────────────────────
     # Macario Schettino — análisis político-económico MX + geopolítica
     # Activo: publica varias veces por semana, última entrada Mayo 4, 2026
-    "Macario Schettino":   "https://macario.substack.com/feed",
+    "Macario Schettino":   "https://macariomx.substack.com/feed",
 
     # ECONOMEX / Alejandro Gómez Tamez — economía MX + geopolítica
     # Activo: última entrada Mayo 3, 2026. Cubre TMEC, Pemex, política fiscal
@@ -58,7 +57,7 @@ RSS_FEEDS = {
     # Michael Burry (Cassandra Unchained) — burbujas, mercados, historia
     # Activo: 270K+ suscriptores, #1 Rising Finance en Substack
     # ⚠️  Contenido mayormente de pago — RSS da título + intro solamente
-    "Michael Burry":       "https://michaeljburry.substack.com/feed",
+    "Michael Burry":       "https://michaelburry.substack.com/feed",
 
     # Adam Tooze (Chartbook) — economía global, geopolítica, historia económica
     # Activo: ~100 posts/año, última entrada hace 2 semanas
