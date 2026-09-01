@@ -33,7 +33,7 @@ RECIPIENT = os.getenv("GMAIL_TO")
 BANXICO_TOKEN = os.getenv("BANXICO_TOKEN")
 
 MX_TZ = ZoneInfo("America/Mexico_City")
-SEEN_PATH = Path(os.getenv("SEEN_PATH", str(Path(__file__).resolve().parent / ".structuring_brief_seen.json")))
+SEEN_PATH = Path(os.getenv("SEEN_PATH", str(Path.home() / ".morning_briefing_seen.json")))
 
 SCRAPE_TIMEOUT = 8
 ARTICLE_MAX_HOURS = 48
@@ -68,7 +68,7 @@ def validar_configuracion():
         )
 
     if BANXICO_TOKEN:
-        print("🔐 Banxico: token detectado")
+        print(f"🔐 Banxico: token detectado ({len(BANXICO_TOKEN)} caracteres)")
     else:
         print("⚠️ Banxico: falta BANXICO_TOKEN; el brief continuará sin referencias oficiales de Banxico")
 
@@ -201,11 +201,11 @@ BLACKLIST = [
 # ─── DATOS DE MERCADO: BANXICO ───────────────────────────────────────────────
 # Series oficiales del SIE de Banco de México.
 BANXICO_REFERENCES = {
-    "USD/MXN FIX": "SF43718",
-    "EUR/MXN Banxico": "SF46410",
-    "GBP/MXN Banxico": "SF46407",
-    "JPY/MXN Banxico": "SF46406",
-    "CAD/MXN Banxico": "SF60632",
+    "USD/MXN FIX (oficial)": "SF43718",
+    "EUR/MXN (Banxico informativo)": "SF46410",
+    "GBP/MXN (Banxico informativo)": "SF46407",
+    "JPY/MXN (Banxico informativo)": "SF46406",
+    "CAD/MXN (Banxico informativo)": "SF60632",
 }
 
 YAHOO_FX = {
@@ -244,7 +244,7 @@ def load_seen() -> dict:
     except Exception:
         return {}
 
-    cutoff = datetime.date.today() - datetime.timedelta(days=30)
+    cutoff = datetime.datetime.now(MX_TZ).date() - datetime.timedelta(days=30)
     clean = {}
     for url, date_str in data.items():
         try:
@@ -256,7 +256,7 @@ def load_seen() -> dict:
 
 
 def save_seen(new_urls: set, old_seen: dict):
-    today = datetime.date.today().isoformat()
+    today = datetime.datetime.now(MX_TZ).date().isoformat()
     merged = dict(old_seen)
     for url in new_urls:
         merged[url] = today
@@ -300,6 +300,48 @@ def normalizar_titulo(titulo: str) -> str:
     t = re.sub(r"\s+-\s+(reuters|bloomberg|financial times|ft|el financiero|el economista).*$", "", t)
     t = re.sub(r"[^a-záéíóúüñ0-9]+", " ", t)
     return re.sub(r"\s+", " ", t).strip()
+
+
+def fecha_publicacion_entry(entry) -> str:
+    """Devuelve la fecha de publicación del RSS en ISO cuando está disponible."""
+    publicado = entry.get("published_parsed") or entry.get("updated_parsed")
+    if not publicado:
+        return ""
+    try:
+        return datetime.datetime(*publicado[:6], tzinfo=datetime.timezone.utc).date().isoformat()
+    except Exception:
+        return ""
+
+
+def datos_fuente(entry, cfg: dict) -> tuple[str, str, int]:
+    """
+    Recupera el publisher real cuando el artículo viene vía Google News y asigna
+    una jerarquía orientativa de fuente. Tier 1 = fuente primaria/regulatoria;
+    Tier 2 = agencia/medio financiero de alta calidad; Tier 3 = resto.
+    """
+    source_obj = entry.get("source") or {}
+    if isinstance(source_obj, dict):
+        publisher = clean_text(source_obj.get("title", "")) or cfg["name"]
+        publisher_url = source_obj.get("href", "") or ""
+    else:
+        publisher = cfg["name"]
+        publisher_url = ""
+
+    texto = f"{publisher} {publisher_url}".lower()
+    tier1 = [
+        "banxico", "banco de méxico", "biva", "bolsa institucional de valores",
+        "bmv", "bolsa mexicana de valores", "gob.mx", "shcp", "hacienda",
+        "sec.gov", "investor relations", "relación con inversionistas",
+    ]
+    tier2 = ["reuters", "bloomberg", "financial times", "ft.com"]
+
+    if any(x in texto for x in tier1):
+        tier = 1
+    elif any(x in texto for x in tier2):
+        tier = 2
+    else:
+        tier = 3
+    return publisher, publisher_url, tier
 
 
 def puntaje_operacion(texto: str) -> int:
@@ -428,12 +470,21 @@ def fetch_news(seen: dict) -> tuple[dict, set]:
             if not is_relevant(f"{title} {summary}", category):
                 continue
 
-            if category == "deals" and puntaje_operacion(f"{title} {summary}") < 3:
-                continue
+            if category == "deals":
+                score_operacion = puntaje_operacion(f"{title} {summary}")
+                umbral = 4 if "news.google.com" in (link or "") else 3
+                if score_operacion < umbral:
+                    continue
 
             body = scrape_article(link) if link else ""
+            publisher, publisher_url, source_tier = datos_fuente(entry, cfg)
             seleccion_feed.append({
-                "source": cfg["name"],
+                "source": publisher,
+                "source_search": cfg["name"],
+                "source_url": publisher_url,
+                "source_tier": source_tier,
+                "published_date": fecha_publicacion_entry(entry),
+                "content_level": "artículo completo" if body else "resumen RSS",
                 "title": title,
                 "summary": summary,
                 "url": link,
@@ -772,7 +823,7 @@ def fetch_ecb_fx():
                 "value": actual,
                 "change": cambio,
                 "date": fecha_actual,
-                "source": "ECB",
+                "source": "BCE (referencia diaria)",
             }
         return out
     except Exception as exc:
@@ -781,6 +832,11 @@ def fetch_ecb_fx():
 
 
 def fetch_yahoo_quote(symbol: str):
+    """
+    Cotización indicativa de Yahoo. El cambio se calcula contra el cierre regular
+    inmediatamente anterior. No usamos chartPreviousClose porque puede representar
+    otra referencia y producir signos erróneos (por ejemplo, en VIX).
+    """
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{quote(symbol, safe='')}"
     params = {"range": "5d", "interval": "1d", "includePrePost": "false"}
     try:
@@ -789,16 +845,19 @@ def fetch_yahoo_quote(symbol: str):
         meta = result.get("meta", {})
         closes = result["indicators"]["quote"][0]["close"]
         timestamps = result["timestamp"]
-        valid = [(ts, c) for ts, c in zip(timestamps, closes) if c is not None]
+        valid = [(ts, safe_float(c)) for ts, c in zip(timestamps, closes) if safe_float(c) is not None]
 
         latest = safe_float(meta.get("regularMarketPrice"))
-        prev = safe_float(meta.get("chartPreviousClose") or meta.get("previousClose"))
         latest_ts = meta.get("regularMarketTime")
+        prev = safe_float(meta.get("regularMarketPreviousClose") or meta.get("previousClose"))
 
         if latest is None and valid:
             latest_ts, latest = valid[-1]
+
+        # Fallback: último cierre diario anterior al último punto válido.
         if prev is None and len(valid) >= 2:
             prev = valid[-2][1]
+
         if latest is None:
             return None
 
@@ -813,7 +872,7 @@ def fetch_yahoo_quote(symbol: str):
             "value": float(latest),
             "change": ((latest / prev - 1) * 100) if prev else None,
             "date": dt.isoformat(),
-            "source": "Yahoo",
+            "source": "Yahoo (indicativo)",
         }
     except Exception as exc:
         print(f"   ⚠️ Yahoo {symbol}: {exc}")
@@ -835,7 +894,7 @@ def fetch_market_snapshot():
     for label, symbol in YAHOO_FX.items():
         q = fetch_yahoo_quote(symbol)
         if q:
-            fx_por_label[label] = {"label": label, "source": "Yahoo", **q}
+            fx_por_label[label] = {"label": label, **q}
 
     # Si Yahoo bloquea o limita consultas (algo frecuente en runners), completamos con el BCE.
     faltantes_fx = [label for label in YAHOO_FX if label not in fx_por_label]
@@ -844,7 +903,7 @@ def fetch_market_snapshot():
         for label in faltantes_fx:
             q = ecb_fx.get(label)
             if q:
-                fx_por_label[label] = {"label": f"{label} (ECB)", **q}
+                fx_por_label[label] = {"label": f"{label} (ref. BCE)", **q}
 
     for label in YAHOO_FX:
         if label in fx_por_label:
@@ -903,7 +962,7 @@ def render_table(title: str, rows: list, kind: str):
     <div class="market-block">
       <div class="market-title">{html.escape(title)}</div>
       <table class="market-table">
-        <thead><tr><th>Instrumento</th><th>Nivel</th><th>Δ día</th><th>Dato</th></tr></thead>
+        <thead><tr><th>Instrumento</th><th>Nivel</th><th>Δ vs. obs. previa</th><th>Dato</th></tr></thead>
         <tbody>{''.join(trs)}</tbody>
       </table>
     </div>
@@ -923,8 +982,8 @@ def render_market_snapshot(snapshot: dict) -> str:
       <div class="sec-label">Foto de mercado</div>
       <p class="market-intro">Niveles previos a las noticias. Python inserta los datos directamente desde las fuentes; Gemini solo los interpreta y no puede modificarlos.</p>
       {note}
-      {render_table('FX — MXN por unidad de divisa (Yahoo; respaldo diario ECB)', snapshot.get('fx', []), 'fx')}
-      {render_table('Referencia oficial de Banxico', snapshot.get('references', []), 'fx')}
+      {render_table('FX indicativo — MXN por unidad de divisa (Yahoo; BCE solo como respaldo de referencia)', snapshot.get('fx', []), 'fx')}
+      {render_table('Banxico — referencias cambiarias', snapshot.get('references', []), 'fx')}
       {render_table('México — tasas', snapshot.get('mx_rates', []), 'rates')}
       {render_table('EE.UU. — SOFR / Treasury', snapshot.get('us_rates', []), 'rates')}
       {render_table('Indicadores de riesgo', snapshot.get('risk', []), 'risk')}
@@ -935,8 +994,8 @@ def render_market_snapshot(snapshot: dict) -> str:
 def market_text_for_prompt(snapshot: dict) -> str:
     blocks = []
     for group_name, rows in [
-        ("FX_INDICATIVO", snapshot.get("fx", [])),
-        ("REFERENCIAS_BANXICO", snapshot.get("references", [])),
+        ("FX_INDICATIVO_NO_ES_CIERRE_OFICIAL", snapshot.get("fx", [])),
+        ("BANXICO_REFERENCIAS_FIX_E_INFORMATIVAS", snapshot.get("references", [])),
         ("TASAS_MEXICO", snapshot.get("mx_rates", [])),
         ("TASAS_EE_UU", snapshot.get("us_rates", [])),
         ("INDICADORES_RIESGO", snapshot.get("risk", [])),
@@ -965,6 +1024,9 @@ def format_articles(items: dict) -> str:
         for a in items[category]:
             blocks.append(
                 f"\nFUENTE: {a['source']}\n"
+                f"TIER_FUENTE: {a.get('source_tier', 3)} (1=primaria/regulatoria; 2=agencia/medio financiero; 3=otra)\n"
+                f"FECHA_ARTÍCULO: {a.get('published_date', '') or 'no disponible'}\n"
+                f"NIVEL_CONTENIDO: {a.get('content_level', 'resumen RSS')}\n"
                 f"TÍTULO: {a['title']}\n"
                 f"URL: {a['url']}\n"
                 f"CONTENIDO: {a['body'][:BODY_CHARS]}"
@@ -1028,6 +1090,16 @@ REGLAS DURAS
 - No des recomendaciones de inversión ni trades direccionales.
 - Evita frases genéricas como "los mercados siguen volátiles" si no explicas el mecanismo concreto.
 - Si mencionas un catalizador futuro, usa fecha absoluta cuando esté disponible y no inventes hora de publicación.
+- MONTO EQUIVALENTE NO ES MONEDA DE DENOMINACIÓN. Si una fuente expresa un tamaño como “US$24m”, “US$60m” o similar, pero no confirma explícitamente que la facilidad/emisión esté denominada en USD, descríbelo como “equivalente aproximado reportado en USD”. NO escribas “deuda en USD”.
+- Nunca infieras un mismatch FX si no están confirmadas tanto la moneda de la deuda como la moneda relevante de los ingresos o flujos.
+- No infieras FX forwards ni CCS únicamente porque el emisor sea mexicano o porque el titular exprese el tamaño de la operación en dólares.
+- Distingue el ESTADO de cada operación. “Priced/issued/closed/completed” puede tratarse como cerrada; “seeks/in talks/working on/mandate/considering/estructurando” NO es una operación cerrada. Si el estado no es inequívoco, escribe “ESTADO NO CONFIRMADO”.
+- Cuando el contenido disponible sea solo “resumen RSS”, sé especialmente conservador: no completes moneda, plazo, uso de recursos, tipo de tasa, contraparte ni estado si no aparecen literalmente.
+- Para términos económicos de una operación (monto, moneda, tenor, cupón, contraparte), da prioridad a TIER_FUENTE 1 sobre 2 y 2 sobre 3. Si dos fuentes difieren, no resuelvas el conflicto por intuición: omite el término conflictivo o explica que no está confirmado.
+- Un dato del BCE marcado como “ref. BCE” es una referencia diaria sintética, NO un cierre de USD/MXN ni una cotización ejecutable. Nunca digas “cerró”, “volvió por encima/debajo de” o “cotiza” basándote exclusivamente en ese dato.
+- El FIX de Banxico es una referencia oficial, pero no es equivalente al cierre spot de mercado. No lo describas como “cierre”.
+- No interpretes un movimiento aislado de TIIE de Fondeo O/N como un cambio en la trayectoria esperada de Banxico ni como un repricing general de la curva MXN salvo que otras tasas/plazos o hechos suministrados lo corroboren.
+- NO conviertas expresiones temporales relativas de artículos (“mañana”, “este miércoles”, “la próxima semana”) en fechas del calendario. Si no existe un bloque de CALENDARIO VERIFICADO proveniente de Python/fuente oficial, “Qué vigilar” debe limitarse a desarrollos abiertos y no a fechas macro específicas.
 - No uses Markdown. Devuelve únicamente fragmentos HTML.
 
 PRIORIDADES PARA ESTE LECTOR
@@ -1070,9 +1142,10 @@ ESTRUCTURA DE SALIDA
 <div class="sec">
   <div class="sec-label">Operaciones recientes</div>
   Selecciona entre 2 y 5 operaciones de financiamiento, mercados de capitales o M&A realmente recientes, priorizando México y después LatAm.
+  Ordena primero operaciones cerradas/priced, y después mandatos o financiamientos en estructuración claramente identificados.
   Para cada una, escribe únicamente términos confirmados por la fuente y luego una inferencia claramente separada:
   <div class="art">
-    <span class="tag tag-deal">OPERACIÓN</span>
+    <span class="tag tag-deal">ESTADO CONFIRMADO: CERRADA / PRICED / ANUNCIADA / EN ESTRUCTURACIÓN / ESTADO NO CONFIRMADO</span>
     <span class="art-title">Emisor / activo / transacción</span>
     <div class="deal-meta">Solo hechos confirmados: monto, moneda, plazo, contraparte, fecha, cupón/rendimiento, etc., únicamente si aparecen en la fuente.</div>
     <p class="art-body">Por qué la operación es estratégicamente relevante.</p>
@@ -1094,7 +1167,8 @@ ESTRUCTURA DE SALIDA
 5. QUÉ VIGILAR
 <div class="sec">
   <div class="sec-label">Qué vigilar</div>
-  Da exactamente 3 elementos breves. Usa solo catalizadores respaldados por el material suministrado. No inventes eventos ni horarios.
+  Da hasta 3 elementos breves. Usa solo catalizadores respaldados por el material suministrado.
+  No construyas un calendario macro a partir de expresiones relativas de noticias. Si no hay una fecha futura verificada por una fuente primaria dentro de los datos, usa únicamente desarrollos abiertos (negociaciones, geopolítica, petróleo, anuncios pendientes, etc.).
   <div class="watch-item">...</div>
 </div>
 
@@ -1209,7 +1283,7 @@ def send_email(content_html: str):
   <div class="body-content">{content_html}</div>
   <div class="footer">
     <p>NOTA MATUTINA CON FUENTES PÚBLICAS · AUTOMATIZADA · NO ES ASESORÍA DE INVERSIÓN<br>
-    Datos de mercado: Banxico SIE · New York Fed · U.S. Treasury · Yahoo (datos indicativos)<br>
+    Datos de mercado: Banxico SIE · New York Fed · U.S. Treasury · Yahoo (indicativo) · BCE (respaldo de referencia)<br>
     Noticias: Reuters / Bloomberg vía Google News · FT · El Financiero · El Economista · fuentes públicas de operaciones<br>
     Análisis con IA: Gemini 2.5 Flash</p>
   </div>
@@ -1222,6 +1296,16 @@ def send_email(content_html: str):
         server.login(GMAIL_USER, GMAIL_PASS)
         server.send_message(msg)
     print(f"   ✅ Correo enviado a {RECIPIENT}")
+
+
+def extraer_urls_publicadas(contenido_html: str) -> set:
+    """Guarda como vistas únicamente las URLs que realmente aparecieron en el correo."""
+    urls = set()
+    for url in re.findall(r'href=["\']([^"\']+)["\']', contenido_html or "", flags=re.I):
+        url = html.unescape(url).strip()
+        if url.startswith("http://") or url.startswith("https://"):
+            urls.add(url)
+    return urls
 
 
 # ─── PROGRAMA PRINCIPAL ──────────────────────────────────────────────────────
@@ -1259,7 +1343,9 @@ def main():
     print("📧 Enviando correo...")
     send_email(full_content)
 
-    save_seen(new_urls, seen)
+    urls_publicadas = extraer_urls_publicadas(analysis_html)
+    save_seen(urls_publicadas, seen)
+    print(f"💾 {len(urls_publicadas)} URLs publicadas añadidas a la memoria anti-repetición")
     print("\n✅ Briefing terminado.\n")
 
 
