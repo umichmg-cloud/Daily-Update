@@ -15,6 +15,7 @@ permissions:
 jobs:
   run-briefing:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -29,12 +30,16 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install google-generativeai feedparser beautifulsoup4 requests
+          pip install google-genai google-generativeai feedparser beautifulsoup4 requests
 
+      # Conserva tu mecanismo original de "ya visto", que sí persiste entre runs.
       - name: Restore history
         run: |
           if [ -f morning_briefing_seen.json ]; then
             cp morning_briefing_seen.json ~/.morning_briefing_seen.json
+            echo "Historial restaurado."
+          else
+            echo "No existe historial previo; se creará al finalizar."
           fi
 
       - name: Run Morning Briefing
@@ -43,7 +48,7 @@ jobs:
           GMAIL_FROM:         ${{ secrets.GMAIL_FROM }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           GMAIL_TO:           ${{ secrets.GMAIL_TO }}
-          BANXICO_TOKEN: ${{ secrets.BANXICO_TOKEN }}
+          BANXICO_TOKEN:      ${{ secrets.BANXICO_TOKEN }}
         run: python morning_briefing.py
 
       - name: Commit and push history update
@@ -51,24 +56,32 @@ jobs:
           git config --global user.name  "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # 1. Mover el archivo generado al repositorio local
           if [ -f ~/.morning_briefing_seen.json ]; then
             cp ~/.morning_briefing_seen.json morning_briefing_seen.json
           fi
-          
-          # 2. Añadir al área de preparación (Stage)
-          git add morning_briefing_seen.json
 
-          # 3. Hacer el commit local para que el área de trabajo esté "limpia"
-          if git diff --staged --quiet; then
-            echo "Sin noticias nuevas hoy."
+          if [ ! -f morning_briefing_seen.json ]; then
+            echo "No se generó archivo de historial."
             exit 0
           fi
+
+          git add morning_briefing_seen.json
+
+          if git diff --staged --quiet; then
+            echo "Sin cambios en el historial."
+            exit 0
+          fi
+
           git commit -m "chore: update seen news history [skip ci]"
 
-          # 4. Ahora que no hay "unstaged changes", el pull --rebase funcionará
           for i in {1..5}; do
-            git pull --rebase origin main && git push origin main && break
+            if git pull --rebase origin main && git push origin main; then
+              echo "Historial actualizado correctamente."
+              exit 0
+            fi
             echo "Colisión detectada con el remoto, reintentando en 5s..."
             sleep 5
           done
+
+          echo "No fue posible actualizar el historial después de 5 intentos."
+          exit 1
