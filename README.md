@@ -1,131 +1,131 @@
-# Structuring Morning Brief
+# Morning Brief
 
-A daily automated market briefing built for a Mexico-focused CIB / Structuring workflow.
+Briefing diario automatizado de mercados, diseñado para un flujo de trabajo de CIB / Structuring con enfoque en México.
 
-The idea came from a simple problem: useful market intelligence is usually scattered across market-data pages, news feeds, deal announcements, and trader chats. This script pulls those inputs together, filters for relevance, and sends a concise morning email focused on one question:
+La idea nace de un problema simple: la información útil para arrancar el día suele estar dispersa entre páginas de mercado, feeds de noticias, anuncios de operaciones y chats de traders. Este script reúne esas fuentes, filtra el ruido y envía un correo matutino conciso centrado en una sola pregunta:
 
-> **What changed, which clients could be affected, and what structuring conversations might become relevant?**
+> **¿Qué cambió, qué clientes podrían verse afectados y qué conversaciones de Structuring podrían volverse relevantes?**
 
-Gemini acts as the editor rather than the data source. Market levels are pulled directly by Python from public sources, while Gemini turns the collected news and transactions into a structured morning read.
+Gemini actúa como editor, no como fuente de datos. Los niveles de mercado se obtienen directamente mediante Python desde fuentes públicas, mientras que Gemini convierte las noticias y operaciones recopiladas en una lectura estructurada para la mañana.
 
 ---
 
-## What it includes
+## Qué incluye
 
-### Market snapshot
+### Foto de mercado
 
-Python retrieves market data directly from public sources before the news analysis is generated.
+Python obtiene los datos de mercado directamente desde fuentes públicas antes de generar el análisis de noticias.
 
-Current coverage includes:
+La cobertura actual incluye:
 
-- USD/MXN and relevant MXN FX crosses
-- Banxico FIX and FX reference rates
-- Banxico policy rate
+- USD/MXN y cruces relevantes contra MXN
+- FIX de Banxico y referencias cambiarias
+- Tasa objetivo de Banxico
 - TIIE de Fondeo O/N
 - TIIE 28D / 91D
 - CETES 28D
 - SOFR
 - U.S. Treasury 2Y / 5Y / 10Y / 30Y
 - UST 2s10s
-- Selected global risk indicators
+- Indicadores globales de riesgo seleccionados
 
-Primary sources include:
+Las principales fuentes son:
 
 - Banco de México SIE
 - New York Fed
 - U.S. Treasury
 - Yahoo Finance
-- ECB reference rates as FX fallback
+- Referencias cambiarias del BCE como respaldo
 
-Market numbers are rendered directly by Python and are not rewritten by the LLM.
+Los niveles de mercado se renderizan directamente desde Python y no son reescritos por el LLM.
 
 ---
 
-## News and deal discovery
+## Noticias y búsqueda de operaciones
 
-The script monitors a combination of direct RSS feeds and targeted Google News searches.
+El script monitorea una combinación de feeds RSS directos y búsquedas dirigidas en Google News.
 
-### Mexico / local markets
+### México / mercados locales
 
 - El Financiero
 - El Economista
 - Reuters
 - Bloomberg
 
-### Global markets
+### Mercados globales
 
 - Financial Times
 - Reuters Global Markets
 - Reuters LatAm
 
-### Transactions
+### Operaciones
 
-Dedicated searches monitor recent activity in:
+Las búsquedas dedicadas monitorean actividad reciente en:
 
-- Bond issuance / DCM
-- Syndicated loans
-- Refinancing
+- Emisiones de bonos / DCM
+- Préstamos sindicados
+- Refinanciamientos
 - Project finance
 - Structured finance
-- Infrastructure financing
-- Securitizations
+- Financiamiento de infraestructura
+- Bursatilizaciones / securitizations
 - Acquisition finance
 - M&A
-- Santander-related transactions in Mexico and Latin America
+- Operaciones relacionadas con Santander en México y Latinoamérica
 
-Google News is mainly used as a discovery layer. The script applies additional filters for recency, relevance, transaction terms, and duplicate stories before anything is sent to Gemini.
-
----
-
-## Briefing structure
-
-Each email is organized into:
-
-1. **Market Snapshot**  
-   FX, MXN rates, SOFR, U.S. Treasuries and risk indicators.
-
-2. **Open**  
-   The two or three developments that matter most that morning.
-
-3. **What Changed**  
-   High-signal developments in rates, FX, commodities, macro and relevant sectors.
-
-4. **Recent Transactions**  
-   Recent financing, capital markets, project finance and M&A activity, with a short Structuring read-through.
-
-5. **Client Radar**  
-   Three exposures or client conversations worth discussing with Coverage / Sales.
-
-6. **What to Watch**  
-   Near-term developments that could change rates, FX, funding conditions or client behavior.
+Google News se utiliza principalmente como capa de descubrimiento. Después, el script aplica filtros adicionales de recencia, relevancia, términos de transacción y duplicados antes de enviar cualquier contenido a Gemini.
 
 ---
 
-## AI layer
+## Estructura del briefing
 
-The briefing currently uses **Gemini 2.5 Flash**.
+Cada correo se organiza en:
 
-The model is instructed to:
+1. **Foto de mercado**  
+   FX, tasas MXN, SOFR, U.S. Treasuries e indicadores de riesgo.
 
-- Separate confirmed facts from inference
-- Never invent market levels or transaction terms
-- Avoid assuming that a USD-equivalent headline means USD-denominated debt
-- Avoid assuming that a financing involved a hedge, swap or derivative
-- Distinguish closed transactions from deals still being structured
-- Use conditional language for potential Structuring opportunities
-- Focus on client relevance rather than general financial-news summaries
+2. **Apertura**  
+   Los dos o tres desarrollos más importantes de la mañana.
 
-The goal is not to produce investment recommendations. It is a concise morning intelligence note for client and Structuring conversations.
+3. **Qué cambió**  
+   Temas de alta señal en tasas, FX, commodities, macro y sectores relevantes.
+
+4. **Operaciones recientes**  
+   Financiamientos, mercados de capitales, project finance y M&A recientes, con una breve lectura desde la óptica de Structuring.
+
+5. **Radar de clientes**  
+   Tres exposiciones o conversaciones que vale la pena discutir con Coverage / Sales.
+
+6. **Qué vigilar**  
+   Desarrollos de corto plazo que podrían cambiar tasas, FX, condiciones de fondeo o comportamiento de clientes.
 
 ---
 
-## Duplicate protection
+## Capa de IA
 
-The script keeps a persistent history of stories already used in previous briefings.
+El briefing utiliza actualmente **Gemini 2.5 Flash**.
 
-This prevents the same article or transaction from repeatedly appearing in the morning email while still allowing new developments to enter the briefing.
+El modelo está instruido para:
 
-The history is persisted automatically between GitHub Actions runs.
+- Separar hechos confirmados de inferencias
+- No inventar niveles de mercado ni términos de operaciones
+- No asumir que un titular expresado en equivalente USD implica deuda denominada en USD
+- No asumir que un financiamiento incluyó hedge, swap o derivado
+- Distinguir operaciones cerradas de operaciones aún en estructuración
+- Utilizar lenguaje condicional para posibles oportunidades de Structuring
+- Priorizar la relevancia para clientes sobre un simple resumen de noticias financieras
+
+El objetivo no es generar recomendaciones de inversión. Es una nota matutina concisa de inteligencia para conversaciones con clientes y equipos de Structuring.
+
+---
+
+## Protección contra duplicados
+
+El script mantiene un historial persistente de las historias ya utilizadas en briefings anteriores.
+
+Esto evita que el mismo artículo u operación aparezca repetidamente en el correo matutino, mientras permite que nuevos desarrollos sigan entrando al briefing.
+
+El historial se conserva automáticamente entre ejecuciones de GitHub Actions.
 
 ---
 
@@ -135,15 +135,15 @@ The history is persisted automatically between GitHub Actions runs.
 
 ---
 
-## Setup
+## Configuración
 
-Install the dependencies:
+Instala las dependencias:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-Then add the following repository secrets in:
+Después, agrega los siguientes secretos del repositorio en:
 
 **GitHub → Settings → Secrets and variables → Actions**
 
@@ -155,34 +155,34 @@ GMAIL_TO
 BANXICO_TOKEN
 ```
 
-### Secret descriptions
+### Descripción de los secretos
 
-- `GEMINI_API_KEY` — Google Gemini API key used to generate the written briefing
-- `GMAIL_FROM` — Gmail account used to send the briefing
-- `GMAIL_APP_PASSWORD` — Google App Password for SMTP authentication
-- `GMAIL_TO` — Recipient email address
-- `BANXICO_TOKEN` — Banco de México SIE API token used for Mexican FX and rate data
+- `GEMINI_API_KEY` — API key de Google Gemini utilizada para generar el briefing escrito
+- `GMAIL_FROM` — Cuenta de Gmail utilizada para enviar el briefing
+- `GMAIL_APP_PASSWORD` — App Password de Google para autenticación SMTP
+- `GMAIL_TO` — Dirección de correo que recibirá el briefing
+- `BANXICO_TOKEN` — Token de la API SIE de Banco de México para obtener datos de FX y tasas mexicanas
 
-Run manually with:
+Para ejecutarlo manualmente:
 
 ```bash
 python morning_briefing.py
 ```
 
-For automated runs, use the included GitHub Actions workflow:
+Para ejecuciones automáticas, utiliza el workflow de GitHub Actions incluido:
 
 ```text
 .github/workflows/daily_morning_briefing.yml
 ```
 
-You can also trigger it manually from:
+También se puede ejecutar manualmente desde:
 
 **GitHub → Actions → Daily Morning Briefing → Run workflow**
 
 ---
 
-## Notes
+## Notas
 
-- GitHub Actions cron schedules use UTC.
-- The briefing keeps a persistent history of previously used stories to reduce repetition.
-- Market data comes directly from public data sources; Gemini is only used for interpretation and writing.
+- Los cron jobs de GitHub Actions utilizan UTC.
+- El briefing mantiene un historial persistente de noticias ya utilizadas para reducir repeticiones.
+- Los datos de mercado provienen directamente de fuentes públicas; Gemini se utiliza únicamente para interpretación y redacción.
