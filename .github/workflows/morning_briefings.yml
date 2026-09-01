@@ -43,6 +43,7 @@ jobs:
           GMAIL_FROM:         ${{ secrets.GMAIL_FROM }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           GMAIL_TO:           ${{ secrets.GMAIL_TO }}
+          BANXICO_TOKEN: ${{ secrets.BANXICO_TOKEN }}
         run: python morning_briefing.py
 
       - name: Commit and push history update
